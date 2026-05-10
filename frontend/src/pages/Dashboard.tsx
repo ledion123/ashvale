@@ -6,7 +6,7 @@ import StatusCell from '../components/StatusCell'
 import { fetchDashboard, syncDashboard, uploadRegister, uploadSites } from '../lib/api'
 import { getWeekRange } from '../lib/dates'
 import { getRegister, saveRegister, computeNotes, type PlantRegister } from '../lib/register'
-import { getActiveSites, saveActiveSites, matchActiveSite, type ActiveSite } from '../lib/sites'
+import { getActiveSites, saveActiveSites, matchActiveSite, getUnmatchReason, type ActiveSite } from '../lib/sites'
 import type { DashboardData, Site } from '../types'
 
 const COLUMNS = ['EXCAVATOR', 'LOLER', 'DUMPER', 'ROLLER', 'TELEHAND', 'PUWER', 'SITE SUP', 'HAVS', 'TOOLBOX']
@@ -24,6 +24,7 @@ export default function Dashboard() {
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
+  const [showUnmatched, setShowUnmatched] = useState(false)
 
   // Plant register (PDF) stored in localStorage
   const [register, setRegister] = useState<PlantRegister | null>(getRegister)
@@ -97,14 +98,14 @@ export default function Dashboard() {
 
   // Merge activeSites into the API response, filter to active sites, track unmatched
   const { enrichedSites, unmatchedSites } = useMemo(() => {
-    if (!data) return { enrichedSites: [], unmatchedSites: [] }
-    if (!activeSites) return { enrichedSites: data.sites, unmatchedSites: [] }
+    if (!data) return { enrichedSites: [], unmatchedSites: [] as { name: string; reason: string }[] }
+    if (!activeSites) return { enrichedSites: data.sites, unmatchedSites: [] as { name: string; reason: string }[] }
     const enrichedSites: Site[] = []
-    const unmatchedSites: string[] = []
+    const unmatchedSites: { name: string; reason: string }[] = []
     for (const site of data.sites) {
       const m = matchActiveSite(site.name, activeSites)
       if (m) enrichedSites.push({ ...site, job_code: m.job_code || site.job_code, supervisor: m.supervisor })
-      else unmatchedSites.push(site.name)
+      else unmatchedSites.push({ name: site.name, reason: getUnmatchReason(site.name) })
     }
     return { enrichedSites, unmatchedSites }
   }, [data, activeSites])
@@ -182,12 +183,30 @@ export default function Dashboard() {
           </label>
 
           {unmatchedSites.length > 0 && (
-            <span
-              title={unmatchedSites.join('\n')}
-              className="text-xs text-amber-400/70 cursor-help border border-amber-500/20 px-2 py-1 rounded-md"
-            >
-              ⚠ {unmatchedSites.length} site{unmatchedSites.length > 1 ? 's' : ''} not matched
-            </span>
+            <div className="relative">
+              <button
+                onClick={() => setShowUnmatched(v => !v)}
+                className="text-xs text-amber-400/70 cursor-pointer border border-amber-500/20 px-2 py-1 rounded-md hover:bg-amber-500/10 transition-colors"
+              >
+                ⚠ {unmatchedSites.length} site{unmatchedSites.length > 1 ? 's' : ''} not matched
+              </button>
+              {showUnmatched && (
+                <div className="absolute right-0 top-full mt-1 z-50 bg-[#1a1d27] border border-[#2a2d3a] rounded-xl shadow-xl p-3 min-w-[320px]">
+                  <p className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">Unmatched sites</p>
+                  <ul className="space-y-2">
+                    {unmatchedSites.map(({ name, reason }) => (
+                      <li key={name}>
+                        <p className="text-sm text-slate-200 font-medium">{name}</p>
+                        <p className="text-xs text-amber-400/70">{reason}</p>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="text-[11px] text-slate-600 mt-3 border-t border-[#2a2d3a] pt-2">
+                    Fix by adding the job code to the Excel, or matching the site name.
+                  </p>
+                </div>
+              )}
+            </div>
           )}
 
           <button
