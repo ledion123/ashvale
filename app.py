@@ -401,10 +401,16 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
 
     SERIAL_CHECK_TKEYS = {"LOLER", "EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND", "PUWER_REGISTER"}
 
-    # site_name -> col_key -> {status, last_completed, audit_id, inspector}
+    # group_key -> col_key -> {status, last_completed, audit_id, inspector}
+    # group_key is normalised job code when available (e.g. "AC23"), else full site name
     site_data    = {}
-    # site_name -> col_key -> set of serial strings found across all inspections this week
     site_serials = {}
+
+    def _group_key(sc_name):
+        first = sc_name.split()[0] if sc_name else ""
+        if re.match(r'^[A-Z]{1,4}\d{2,}$', first, re.I):
+            return normalize_job(first), first, normalize_job(first)
+        return sc_name, sc_name, ""
 
     for audit_id, detail in details.items():
         tkey = audit_to_tkey[audit_id]
@@ -412,6 +418,8 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
         site_name = ad.get("site", {}).get("name", "").strip()
         if not site_name:
             continue
+
+        gkey, display, job = _group_key(site_name)
 
         date_completed = ad.get("date_completed") or ad.get("date_modified", "")
         authorship = ad.get("authorship", {})
@@ -423,13 +431,14 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
         else:
             col_keys = [tkey]
 
-        site_data.setdefault(site_name, {})
+        if gkey not in site_data:
+            site_data[gkey] = {"_display_name": display, "_job_code": job}
 
         for col_key in col_keys:
-            existing = site_data[site_name].get(col_key)
+            existing = site_data[gkey].get(col_key)
             # Keep only the most recent inspection per site/column
             if not existing or (date_completed and date_completed > existing["last_completed"]):
-                site_data[site_name][col_key] = {
+                site_data[gkey][col_key] = {
                     "last_completed": date_completed,
                     "audit_id": audit_id,
                     "inspector": inspector,
@@ -442,17 +451,16 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                 for item in detail.get("items", [])
             )
             serials = extract_serials(all_text)
-            site_serials.setdefault(site_name, {})
+            site_serials.setdefault(gkey, {})
             for ck in col_keys:
-                site_serials[site_name].setdefault(ck, set())
-                site_serials[site_name][ck].update(serials)
+                site_serials[gkey].setdefault(ck, set())
+                site_serials[gkey][ck].update(serials)
 
     # Build output
     sites_list = []
-    for site_name, cols in sorted(site_data.items()):
-        # Extract job code from first word of SC site name (e.g. "AC23 Linmere" → "AC23")
-        first = site_name.split()[0] if site_name else ""
-        job_code = normalize_job(first) if re.match(r'^[A-Z]{1,4}\d{2,}$', first, re.I) else ""
+    for gkey, cols in sorted(site_data.items()):
+        site_name = cols["_display_name"]
+        job_code  = cols["_job_code"]
 
         templates_status = {}
         for col_key in DISPLAY_COLUMNS:
@@ -475,7 +483,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "last_completed": info["last_completed"],
                     "audit_id": info["audit_id"],
                     "inspector": info["inspector"],
-                    "found_serials": sorted(site_serials.get(site_name, {}).get(col_key, set())),
+                    "found_serials": sorted(site_serials.get(gkey, {}).get(col_key, set())),
                 }
             else:
                 templates_status[col_key] = {

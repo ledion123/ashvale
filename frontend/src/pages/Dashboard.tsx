@@ -95,17 +95,18 @@ export default function Dashboard() {
     }
   }
 
-  // Merge activeSites into the API response and filter to only active sites
-  const enrichedSites: Site[] = useMemo(() => {
-    if (!data) return []
-    return data.sites.flatMap(site => {
-      if (activeSites) {
-        const match = matchActiveSite(site.name, activeSites)
-        if (!match) return []  // hide sites not in the active list
-        return [{ ...site, job_code: match.job_code || site.job_code, supervisor: match.supervisor }]
-      }
-      return [site]
-    })
+  // Merge activeSites into the API response, filter to active sites, track unmatched
+  const { enrichedSites, unmatchedSites } = useMemo(() => {
+    if (!data) return { enrichedSites: [], unmatchedSites: [] }
+    if (!activeSites) return { enrichedSites: data.sites, unmatchedSites: [] }
+    const enrichedSites: Site[] = []
+    const unmatchedSites: string[] = []
+    for (const site of data.sites) {
+      const m = matchActiveSite(site.name, activeSites)
+      if (m) enrichedSites.push({ ...site, job_code: m.job_code || site.job_code, supervisor: m.supervisor })
+      else unmatchedSites.push(site.name)
+    }
+    return { enrichedSites, unmatchedSites }
   }, [data, activeSites])
 
   const filteredSites = useMemo(() => {
@@ -179,6 +180,15 @@ export default function Dashboard() {
             {registerUploading ? 'Parsing…' : register ? 'Register ✓' : 'Upload Register'}
             <input ref={registerRef} type="file" accept=".pdf" className="hidden" onChange={handleRegisterUpload} disabled={registerUploading} />
           </label>
+
+          {unmatchedSites.length > 0 && (
+            <span
+              title={unmatchedSites.join('\n')}
+              className="text-xs text-amber-400/70 cursor-help border border-amber-500/20 px-2 py-1 rounded-md"
+            >
+              ⚠ {unmatchedSites.length} site{unmatchedSites.length > 1 ? 's' : ''} not matched
+            </span>
+          )}
 
           <button
             onClick={handleSync}
