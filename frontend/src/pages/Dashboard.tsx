@@ -6,7 +6,7 @@ import StatusCell from '../components/StatusCell'
 import { fetchDashboard, syncDashboard, uploadRegister, uploadSites } from '../lib/api'
 import { getWeekRange } from '../lib/dates'
 import { getRegister, saveRegister, computeNotes, type PlantRegister } from '../lib/register'
-import { getActiveSites, saveActiveSites, matchActiveSite, getUnmatchReason, type ActiveSite } from '../lib/sites'
+import { getActiveSites, saveActiveSites, matchActiveSite, getUnmatchReason, normalizeJob, type ActiveSite } from '../lib/sites'
 import type { DashboardData, Site } from '../types'
 
 const COLUMNS = ['EXCAVATOR', 'LOLER', 'DUMPER', 'ROLLER', 'TELEHAND', 'PUWER', 'SITE SUP', 'HAVS', 'TOOLBOX']
@@ -78,6 +78,16 @@ export default function Dashboard() {
       if (registerRef.current) registerRef.current.value = ''
     }
   }
+
+  const addUnmatchedSite = useCallback((scName: string) => {
+    const firstWord = scName.trim().split(/\s+/)[0] ?? ''
+    const isJobCode = /^[A-Z]{1,4}\d{2,}$/i.test(firstWord)
+    const jobCode = isJobCode ? normalizeJob(firstWord) : ''
+    const newSite: ActiveSite = { name: scName, job_code: jobCode, supervisor: '' }
+    const updated = [...(activeSites ?? []), newSite]
+    saveActiveSites(updated)
+    setActiveSites(updated)
+  }, [activeSites])
 
   const handleSitesUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -195,9 +205,17 @@ export default function Dashboard() {
                   <p className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">Unmatched sites</p>
                   <ul className="space-y-2">
                     {unmatchedSites.map(({ name, reason }) => (
-                      <li key={name}>
-                        <p className="text-sm text-slate-200 font-medium">{name}</p>
-                        <p className="text-xs text-amber-400/70">{reason}</p>
+                      <li key={name} className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm text-slate-200 font-medium">{name}</p>
+                          <p className="text-xs text-amber-400/70">{reason}</p>
+                        </div>
+                        <button
+                          onClick={() => addUnmatchedSite(name)}
+                          className="shrink-0 text-xs text-emerald-400 hover:text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded transition-colors mt-0.5"
+                        >
+                          + Add
+                        </button>
                       </li>
                     ))}
                   </ul>
