@@ -5,10 +5,13 @@ export interface TemplateStatus {
   last_completed: string | null
   audit_id: string | null
   inspector: string | null
+  found_serials?: string[]
 }
 
 export interface Site {
   name: string
+  job_code?: string
+  supervisor?: string
   templates: Record<string, TemplateStatus>
 }
 

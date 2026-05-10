@@ -9,3 +9,4 @@ test_output.xlsx
 venv/
 node_modules/
 frontend/dist/
+.vercel

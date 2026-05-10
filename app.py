@@ -399,8 +399,12 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
     # Fetch all audit details in parallel (50 workers for speed)
     details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()), max_workers=50)
 
+    SERIAL_CHECK_TKEYS = {"LOLER", "EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND", "PUWER_REGISTER"}
+
     # site_name -> col_key -> {status, last_completed, audit_id, inspector}
-    site_data = {}
+    site_data    = {}
+    # site_name -> col_key -> set of serial strings found across all inspections this week
+    site_serials = {}
 
     for audit_id, detail in details.items():
         tkey = audit_to_tkey[audit_id]
@@ -431,9 +435,25 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "inspector": inspector,
                 }
 
+        # Extract serial numbers from all item text/notes for machine-type inspections
+        if tkey in SERIAL_CHECK_TKEYS:
+            all_text = " ".join(
+                (item.get("responses", {}).get("text") or "") + " " + (item.get("note") or "")
+                for item in detail.get("items", [])
+            )
+            serials = extract_serials(all_text)
+            site_serials.setdefault(site_name, {})
+            for ck in col_keys:
+                site_serials[site_name].setdefault(ck, set())
+                site_serials[site_name][ck].update(serials)
+
     # Build output
     sites_list = []
     for site_name, cols in sorted(site_data.items()):
+        # Extract job code from first word of SC site name (e.g. "AC23 Linmere" → "AC23")
+        first = site_name.split()[0] if site_name else ""
+        job_code = normalize_job(first) if re.match(r'^[A-Z]{1,4}\d{2,}$', first, re.I) else ""
+
         templates_status = {}
         for col_key in DISPLAY_COLUMNS:
             info = cols.get(col_key)
@@ -455,6 +475,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "last_completed": info["last_completed"],
                     "audit_id": info["audit_id"],
                     "inspector": info["inspector"],
+                    "found_serials": sorted(site_serials.get(site_name, {}).get(col_key, set())),
                 }
             else:
                 templates_status[col_key] = {
@@ -462,8 +483,9 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "last_completed": None,
                     "audit_id": None,
                     "inspector": None,
+                    "found_serials": [],
                 }
-        sites_list.append({"name": site_name, "templates": templates_status})
+        sites_list.append({"name": site_name, "job_code": job_code, "templates": templates_status})
 
     total     = len(sites_list)
     compliant = sum(1 for s in sites_list if all(t["status"] == "ok" for t in s["templates"].values()))
@@ -565,6 +587,65 @@ def api_inspection_detail(audit_id):
     try:
         detail = sc.get_audit(audit_id)
         return jsonify(detail)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Plant register & active sites parsing ────────────────
+
+@app.route("/api/parse-register", methods=["POST"])
+def api_parse_register():
+    f = request.files.get("pdf")
+    if not f:
+        return jsonify({"error": "No PDF uploaded"}), 400
+    try:
+        site_machines, name_to_job = parse_pdf(f.read())
+        register = {
+            job: {mtype: sorted(serials) for mtype, serials in mtypes.items()}
+            for job, mtypes in site_machines.items()
+        }
+        return jsonify({"register": register, "name_to_job": name_to_job})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/parse-sites", methods=["POST"])
+def api_parse_sites():
+    f = request.files.get("excel")
+    if not f:
+        return jsonify({"error": "No Excel uploaded"}), 400
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(f.read()))
+        ws = wb.active
+
+        # Locate header row and column indexes
+        header_row = 1
+        site_col = job_col = sup_col = None
+        for row in ws.iter_rows(min_row=1, max_row=10):
+            for cell in row:
+                val = str(cell.value or "").strip().upper()
+                if val == "SITE":
+                    header_row = cell.row
+                    site_col   = cell.column - 1
+                elif val in ("JOB", "JOB CODE", "CODE"):
+                    job_col = cell.column - 1
+                elif "SUPER" in val or val in ("SSV", "SS", "SUPERVISOR"):
+                    sup_col = cell.column - 1
+            if site_col is not None:
+                break
+
+        sites = []
+        for row in ws.iter_rows(min_row=header_row + 1):
+            def cv(idx):
+                return str(row[idx].value or "").strip() if idx is not None and idx < len(row) else ""
+            name = cv(site_col) if site_col is not None else ""
+            if not name:
+                continue
+            job  = normalize_job(cv(job_col)) if job_col is not None else ""
+            sup  = cv(sup_col) if sup_col is not None else ""
+            sites.append({"name": name, "job_code": job, "supervisor": sup})
+
+        return jsonify({"sites": sites})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
