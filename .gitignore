@@ -5,3 +5,7 @@ __pycache__/
 *.jpg
 test_output.xlsx
 .env
+.venv/
+venv/
+node_modules/
+frontend/dist/

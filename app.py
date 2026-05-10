@@ -1,16 +1,19 @@
 import io
+import os
 import re
 import requests
 import pdfplumber
-from datetime import datetime
-from flask import Flask, request, send_file, jsonify
+from datetime import datetime, timedelta, timezone
+from flask import Flask, request, send_file, jsonify, send_from_directory
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment
 
-app = Flask(__name__, static_folder="static", static_url_path="/static")
+from dotenv import load_dotenv
+load_dotenv()
 
-TOKEN   = "scapi_Nf7mSyq59RHTFKowB4IwfB1jrAUMLHOcP9Q1IVZTNxnr56rlQBIprIrT8E7cwsQcYQeEXvblPcAI1CfSYz2JpDK-8Uh4jzk1ihDKYUmU60bLbqzZp2vr-QudExowN_vj1VESr35mw4SUQMXNoLil-rtxzFeuoKaScvAsWyclZ4w"
-HEADERS = {"Authorization": f"Bearer {TOKEN}"}
+import sc_client as sc
+
+app = Flask(__name__, static_folder="static", static_url_path="/static")
 
 TEMPLATES = {
     "template_7dbbb416041a44459216a2a0ba02bb10": "LOLER",
@@ -23,7 +26,11 @@ TEMPLATES = {
     "template_6d565926a30944f2927a7760c343f4ee": "HAVS",
     "template_277834af991b482c945030f0f936f5a9": "TOOLBOX",
 }
-PUWER_ALL = {"PUWER_REGISTER"}
+
+# PUWER_REGISTER completion marks all five machine-type columns
+PUWER_COLUMNS = ("PUWER", "EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND")
+
+DISPLAY_COLUMNS = ["EXCAVATOR", "LOLER", "DUMPER", "ROLLER", "TELEHAND", "PUWER", "SITE SUP", "HAVS", "TOOLBOX"]
 
 # 0-based column indexes in Sheet2
 COL_COMPLIANCE = {
@@ -37,9 +44,8 @@ COL_COMPLIANCE = {
     "HAVS":      9,
     "TOOLBOX":   10,
 }
-NOTES_COL = 14   # 1-based
+NOTES_COL = 14
 
-# Serial prefix → machine type
 PREFIX_TYPE = {
     "ROR": "ROLLER",
     "TL":  "TELEHAND",
@@ -49,15 +55,14 @@ PREFIX_TYPE = {
     "BG":  "LOLER",
     "TS":  "LOLER",
 }
-# ASH serials need description keyword to determine type
 ASH_KEYWORDS = {
-    "EXCAVATOR": "EXCAVATOR",
-    "DIGGER":    "EXCAVATOR",
-    "JCB":       "EXCAVATOR",
-    "DUMPER":    "DUMPER",
-    "ROLLER":    "ROLLER",
+    "EXCAVATOR":   "EXCAVATOR",
+    "DIGGER":      "EXCAVATOR",
+    "JCB":         "EXCAVATOR",
+    "DUMPER":      "DUMPER",
+    "ROLLER":      "ROLLER",
     "TELEHANDLER": "TELEHAND",
-    "TELEHAND":  "TELEHAND",
+    "TELEHAND":    "TELEHAND",
 }
 
 SERIAL_TOKEN_RE = re.compile(r'\b(ASH|ROR|TL|SL|SH|FK|BG|TS)\s*([\dA-Z][\dA-Z/]*)', re.IGNORECASE)
@@ -91,16 +96,21 @@ def extract_serials(text):
                 serials.add(prefix + part.upper())
     return serials
 
+def current_week_range():
+    today = datetime.now(timezone.utc).date()
+    monday = today - timedelta(days=today.weekday())
+    return str(monday), str(today)
+
+def to_iso(date_str, end=False):
+    t = "T23:59:59Z" if end else "T00:00:00Z"
+    return f"{date_str}{t}"
+
 
 # ── PDF parsing ───────────────────────────────────────────
 
 def parse_pdf(pdf_bytes):
-    """
-    Returns {norm_job_code: {machine_type: set_of_serials}}
-    Also returns name_to_job {norm_site_name: norm_job_code}
-    """
-    site_machines = {}   # norm_job → {machine_type: set()}
-    name_to_job   = {}   # norm_site_name → norm_job
+    site_machines = {}
+    name_to_job   = {}
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
@@ -109,42 +119,29 @@ def parse_pdf(pdf_bytes):
                 line = line.strip()
                 if not line:
                     continue
-
                 jm = JOB_CODE_RE.search(line)
                 if not jm:
                     continue
-
                 raw_job   = jm.group(1).upper()
                 norm_job  = normalize_job(raw_job)
                 site_name = line[:jm.start()].strip()
-
                 if norm_job not in site_machines:
                     site_machines[norm_job] = {}
                     if site_name:
                         name_to_job[norm_name(site_name)] = norm_job
-
                 line_upper = line.upper()
                 serials    = extract_serials(line)
-
                 for serial in serials:
                     prefix = re.match(r'^([A-Z]+)', serial)
                     if not prefix:
                         continue
                     pfx = prefix.group(1)
-
                     if pfx in PREFIX_TYPE:
                         mtype = PREFIX_TYPE[pfx]
                     elif pfx == "ASH":
-                        mtype = None
-                        for kw, mt in ASH_KEYWORDS.items():
-                            if kw in line_upper:
-                                mtype = mt
-                                break
-                        if not mtype:
-                            mtype = "EXCAVATOR"  # default ASH to excavator
+                        mtype = next((mt for kw, mt in ASH_KEYWORDS.items() if kw in line_upper), "EXCAVATOR")
                     else:
                         continue
-
                     site_machines[norm_job].setdefault(mtype, set()).add(serial)
 
     return site_machines, name_to_job
@@ -171,7 +168,6 @@ def build_lookup(ws):
         name_lookup[site_val.lower()] = rn
     return job_lookup, name_lookup, header_row
 
-
 def find_row(sc_site, job_lookup, name_lookup):
     parts  = sc_site.strip().split()
     sc_job = parts[0].upper() if parts and re.match(r'^[A-Z]{1,4}\d{2,}$', parts[0], re.I) else ""
@@ -187,7 +183,6 @@ def find_row(sc_site, job_lookup, name_lookup):
             best, best_row = c, rn
     return best_row if best >= 2 else None
 
-
 def mark_cell(ws, row_num, col_idx, done=True):
     cell = ws.cell(row=row_num, column=col_idx + 1)
     orig = str(cell.value).strip().upper() if cell.value else ""
@@ -200,40 +195,35 @@ def mark_cell(ws, row_num, col_idx, done=True):
     cell.font      = W_FONT
     cell.alignment = CENTER
 
-
 def append_note(notes_dict, row_num, msg):
     notes_dict.setdefault(row_num, [])
     if msg not in notes_dict[row_num]:
         notes_dict[row_num].append(msg)
 
 
-# ── Main report generation ────────────────────────────────
+# ── Excel report generation (unchanged) ──────────────────
 
 def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
     modified_after  = datetime.strptime(from_date, "%Y-%m-%d").strftime("%Y-%m-%dT00:00:00Z")
     modified_before = datetime.strptime(to_date,   "%Y-%m-%d").strftime("%Y-%m-%dT23:59:59Z")
 
-    # Parse PDF if provided
-    pdf_machines = {}   # norm_job → {machine_type: set_of_serials}
-    pdf_name_map = {}   # norm_site_name → norm_job
+    pdf_machines = {}
+    pdf_name_map = {}
     if pdf_bytes:
         pdf_machines, pdf_name_map = parse_pdf(pdf_bytes)
 
-    # Load Excel template
     wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
     ws = wb["Sheet2"] if "Sheet2" in wb.sheetnames else wb.active
     job_lookup, name_lookup, header_row = build_lookup(ws)
-
-    # Build reverse lookup: row_num → norm_job (from Excel job column)
     row_to_normjob = {rn: nj for nj, rn in job_lookup.items()}
 
-    # matched[row_num] = set of tkeys done
-    # row_notes[row_num] = list of notes
     matched   = {}
     row_notes = {}
 
+    headers = {"Authorization": f"Bearer {os.environ.get('SAFETYCULTURE_API_TOKEN', '')}"}
+
     for tid, tkey in TEMPLATES.items():
-        r = requests.get("https://api.safetyculture.io/audits/search", headers=HEADERS, params={
+        r = requests.get("https://api.safetyculture.io/audits/search", headers=headers, params={
             "template": tid,
             "modified_after": modified_after,
             "modified_before": modified_before,
@@ -243,7 +233,7 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
         audits = r.json().get("audits", [])
 
         for a in audits:
-            r2    = requests.get(f"https://api.safetyculture.io/audits/{a['audit_id']}", headers=HEADERS)
+            r2    = requests.get(f"https://api.safetyculture.io/audits/{a['audit_id']}", headers=headers)
             d     = r2.json()
             ad    = d.get("audit_data", {})
             items = d.get("items", [])
@@ -255,56 +245,46 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
 
             matched.setdefault(row_num, set())
             row_notes.setdefault(row_num, [])
-            display = "PUWER" if tkey in PUWER_ALL else tkey
+            display = "PUWER" if tkey == "PUWER_REGISTER" else tkey
 
-            # Mark compliance columns
-            if tkey in PUWER_ALL:
-                for col_key in ("PUWER", "EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND"):
+            if tkey == "PUWER_REGISTER":
+                for col_key in PUWER_COLUMNS:
                     mark_cell(ws, row_num, COL_COMPLIANCE[col_key], True)
                     matched[row_num].add(col_key)
             elif tkey in COL_COMPLIANCE:
                 mark_cell(ws, row_num, COL_COMPLIANCE[tkey], True)
                 matched[row_num].add(tkey)
 
-            # Check serial numbers for LOLER/PUWER machine inspections
-            if tkey in ("LOLER", "EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND") or tkey in PUWER_ALL:
-                # Collect all text from inspection items
+            if tkey in ("LOLER", "EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND") or tkey == "PUWER_REGISTER":
                 all_text = ""
                 for item in items:
                     responses = item.get("responses", {})
                     all_text += " " + (responses.get("text") or "")
                     all_text += " " + (item.get("note") or "")
-
                 found_serials = extract_serials(all_text)
 
                 if pdf_bytes:
-                    # Get registered serials for this site + machine type
                     norm_job   = row_to_normjob.get(row_num, "")
                     registered = set()
                     if norm_job and norm_job in pdf_machines:
-                        if tkey in PUWER_ALL:
+                        if tkey == "PUWER_REGISTER":
                             for mt in ("EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND"):
                                 registered |= pdf_machines[norm_job].get(mt, set())
                         else:
                             registered = pdf_machines[norm_job].get(tkey, set())
-
                     if not found_serials:
                         append_note(row_notes, row_num, f"No serial no. on {display}")
                     else:
                         missing = registered - found_serials
                         unknown = found_serials - registered
                         if missing:
-                            append_note(row_notes, row_num,
-                                f"Not inspected ({display}): {', '.join(sorted(missing))}")
+                            append_note(row_notes, row_num, f"Not inspected ({display}): {', '.join(sorted(missing))}")
                         if unknown:
-                            append_note(row_notes, row_num,
-                                f"Not in register ({display}): {', '.join(sorted(unknown))}")
+                            append_note(row_notes, row_num, f"Not in register ({display}): {', '.join(sorted(unknown))}")
                 else:
-                    # No PDF — just flag missing serial numbers
                     if not found_serials:
                         append_note(row_notes, row_num, f"No serial no. on {display}")
 
-            # At Risk items always noted
             for item in items:
                 selected = item.get("responses", {}).get("selected", [])
                 status   = selected[0].get("label", "").strip() if selected else ""
@@ -312,8 +292,6 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
                     label = (item.get("label") or "").strip()
                     append_note(row_notes, row_num, f"At Risk: {label[:40]} ({display})")
 
-    # Mark unmatched cells — but only blank cells (skip N/A handled in mark_cell)
-    # If PDF provided, only mark N for machine types that actually exist at this site
     for row in ws.iter_rows(min_row=header_row + 1):
         if not row[0].value:
             continue
@@ -325,10 +303,8 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
         for col_key, col_idx in COL_COMPLIANCE.items():
             if col_key in done:
                 continue
-            # If PDF loaded and machine type not present at this site → leave blank
             if site_machines_here is not None and col_key in ("EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND", "LOLER"):
                 if col_key not in site_machines_here:
-                    # Clear any existing value but leave blank
                     cell = ws.cell(row=row_num, column=col_idx + 1)
                     orig = str(cell.value).strip().upper() if cell.value else ""
                     if orig == "N/A":
@@ -337,7 +313,6 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
                     continue
             mark_cell(ws, row_num, col_idx, False)
 
-    # Write notes (append to existing)
     for row_num, notes in row_notes.items():
         if not notes:
             continue
@@ -353,12 +328,201 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
     return out
 
 
-# ── Routes ────────────────────────────────────────────────
+# ── Dashboard data builder ────────────────────────────────
 
-@app.route("/")
-def index():
-    return app.send_static_file("index.html")
+def build_dashboard_data(from_date, to_date):
+    """
+    Fetch all completed inspections for the last 30 days, then determine
+    ok / overdue / missing status per site per template column.
+    """
+    thirty_ago = str((datetime.now(timezone.utc).date() - timedelta(days=30)))
+    modified_after  = to_iso(thirty_ago)
+    modified_before = to_iso(to_date, end=True)
 
+    week_start = datetime.strptime(from_date, "%Y-%m-%d").date()
+
+    # Collect all audit IDs keyed by template
+    audit_to_tkey = {}
+    for tid, tkey in TEMPLATES.items():
+        try:
+            audits = sc.search_audits(tid, modified_after, modified_before)
+            for a in audits:
+                audit_to_tkey[a["audit_id"]] = tkey
+        except Exception:
+            pass
+
+    # Fetch all audit details in parallel
+    details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()))
+
+    # site_name -> col_key -> {status, last_completed, audit_id, inspector}
+    site_data = {}
+
+    for audit_id, detail in details.items():
+        tkey = audit_to_tkey[audit_id]
+        ad   = detail.get("audit_data", {})
+        site_name = ad.get("site", {}).get("name", "").strip()
+        if not site_name:
+            continue
+
+        date_completed = ad.get("date_completed") or ad.get("modified_at", "")
+        owner = ad.get("owner", {})
+        inspector = owner.get("name", "") if isinstance(owner, dict) else ""
+
+        # Determine which display columns this inspection covers
+        if tkey == "PUWER_REGISTER":
+            col_keys = list(PUWER_COLUMNS)
+        else:
+            col_keys = [tkey]
+
+        site_data.setdefault(site_name, {})
+
+        for col_key in col_keys:
+            existing = site_data[site_name].get(col_key)
+            # Keep only the most recent inspection per site/column
+            if not existing or (date_completed and date_completed > existing["last_completed"]):
+                site_data[site_name][col_key] = {
+                    "last_completed": date_completed,
+                    "audit_id": audit_id,
+                    "inspector": inspector,
+                }
+
+    # Build output
+    sites_list = []
+    for site_name, cols in sorted(site_data.items()):
+        templates_status = {}
+        for col_key in DISPLAY_COLUMNS:
+            info = cols.get(col_key)
+            if info and info["last_completed"]:
+                try:
+                    dc = datetime.fromisoformat(info["last_completed"].replace("Z", "+00:00")).date()
+                except Exception:
+                    dc = None
+
+                if dc and dc >= week_start:
+                    status = "ok"
+                elif dc:
+                    status = "overdue"
+                else:
+                    status = "missing"
+
+                templates_status[col_key] = {
+                    "status": status,
+                    "last_completed": info["last_completed"],
+                    "audit_id": info["audit_id"],
+                    "inspector": info["inspector"],
+                }
+            else:
+                templates_status[col_key] = {
+                    "status": "missing",
+                    "last_completed": None,
+                    "audit_id": None,
+                    "inspector": None,
+                }
+        sites_list.append({"name": site_name, "templates": templates_status})
+
+    total     = len(sites_list)
+    compliant = sum(1 for s in sites_list if all(t["status"] == "ok" for t in s["templates"].values()))
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "week_start": from_date,
+        "week_end": to_date,
+        "sites": sites_list,
+        "summary": {"total": total, "compliant": compliant, "has_gaps": total - compliant},
+    }
+
+
+# ── API Routes ────────────────────────────────────────────
+
+@app.route("/api/sites")
+def api_sites():
+    try:
+        data = sc.get_sites()
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/dashboard")
+def api_dashboard():
+    from_date = request.args.get("from")
+    to_date   = request.args.get("to")
+    if not from_date or not to_date:
+        from_date, to_date = current_week_range()
+    try:
+        return jsonify(build_dashboard_data(from_date, to_date))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sync", methods=["POST"])
+def api_sync():
+    data = request.get_json(silent=True) or {}
+    from_date = data.get("from")
+    to_date   = data.get("to")
+    if not from_date or not to_date:
+        from_date, to_date = current_week_range()
+    try:
+        return jsonify(build_dashboard_data(from_date, to_date))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/inspections")
+def api_inspections():
+    site_filter     = request.args.get("site", "").lower()
+    template_filter = request.args.get("template", "")
+    from_date       = request.args.get("from")
+    to_date         = request.args.get("to")
+
+    if not from_date or not to_date:
+        from_date, to_date = current_week_range()
+
+    modified_after  = to_iso(from_date)
+    modified_before = to_iso(to_date, end=True)
+
+    audit_to_tkey = {}
+    for tid, tkey in TEMPLATES.items():
+        if template_filter and tkey != template_filter:
+            continue
+        try:
+            for a in sc.search_audits(tid, modified_after, modified_before):
+                audit_to_tkey[a["audit_id"]] = tkey
+        except Exception:
+            pass
+
+    details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()))
+    results = []
+    for audit_id, detail in details.items():
+        tkey = audit_to_tkey[audit_id]
+        ad   = detail.get("audit_data", {})
+        site_name = ad.get("site", {}).get("name", "").strip()
+        if site_filter and site_filter not in site_name.lower():
+            continue
+        owner = ad.get("owner", {})
+        results.append({
+            "audit_id":       audit_id,
+            "template":       tkey,
+            "site":           site_name,
+            "date_completed": ad.get("date_completed") or ad.get("modified_at", ""),
+            "inspector":      owner.get("name", "") if isinstance(owner, dict) else "",
+            "score":          ad.get("score", ""),
+        })
+
+    results.sort(key=lambda x: x["date_completed"], reverse=True)
+    return jsonify({"inspections": results})
+
+
+@app.route("/api/inspections/<audit_id>")
+def api_inspection_detail(audit_id):
+    try:
+        detail = sc.get_audit(audit_id)
+        return jsonify(detail)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Excel report route (unchanged) ───────────────────────
 
 @app.route("/generate", methods=["POST"])
 def generate():
@@ -381,9 +545,18 @@ def generate():
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+# ── Serve React app (catch-all for client-side routing) ──
+
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_react(path):
+    static_dir = app.static_folder
+    if path and os.path.exists(os.path.join(static_dir, path)):
+        return send_from_directory(static_dir, path)
+    return send_from_directory(static_dir, "index.html")
+
+
 if __name__ == "__main__":
-    import os
     os.makedirs("static", exist_ok=True)
-    print("Starting Ashvale Report Server...")
-    print("Open your browser at: http://localhost:5050")
+    print("Open: http://localhost:5050")
     app.run(port=5050, debug=False)
