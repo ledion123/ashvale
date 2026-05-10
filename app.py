@@ -328,31 +328,76 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
     return out
 
 
+# ── Dashboard cache (file-based, 1-hour TTL) ─────────────
+
+import json as _json
+import tempfile
+
+_CACHE_FILE = os.path.join(tempfile.gettempdir(), "ashvale_dashboard_cache.json")
+_CACHE_TTL  = 3600  # seconds
+
+def _read_cache(cache_key):
+    try:
+        with open(_CACHE_FILE) as f:
+            store = _json.load(f)
+        entry = store.get(cache_key)
+        if entry and (datetime.now(timezone.utc).timestamp() - entry["ts"]) < _CACHE_TTL:
+            return entry["data"]
+    except Exception:
+        pass
+    return None
+
+def _write_cache(cache_key, data):
+    try:
+        try:
+            with open(_CACHE_FILE) as f:
+                store = _json.load(f)
+        except Exception:
+            store = {}
+        store[cache_key] = {"ts": datetime.now(timezone.utc).timestamp(), "data": data}
+        with open(_CACHE_FILE, "w") as f:
+            _json.dump(store, f)
+    except Exception:
+        pass
+
+
 # ── Dashboard data builder ────────────────────────────────
 
-def build_dashboard_data(from_date, to_date):
+def build_dashboard_data(from_date, to_date, force_refresh=False):
     """
-    Fetch all completed inspections for the last 30 days, then determine
-    ok / overdue / missing status per site per template column.
+    Fetch completed inspections for the selected week.
+    Results are cached for 1 hour to keep subsequent loads instant.
     """
-    thirty_ago = str((datetime.now(timezone.utc).date() - timedelta(days=30)))
-    modified_after  = to_iso(thirty_ago)
+    cache_key = f"{from_date}:{to_date}"
+    if not force_refresh:
+        cached = _read_cache(cache_key)
+        if cached:
+            return cached
+
+    modified_after  = to_iso(from_date)
     modified_before = to_iso(to_date, end=True)
 
     week_start = datetime.strptime(from_date, "%Y-%m-%d").date()
 
-    # Collect all audit IDs keyed by template
+    # Search all templates in parallel, then fetch audit details in parallel
+    from concurrent.futures import ThreadPoolExecutor
+
     audit_to_tkey = {}
-    for tid, tkey in TEMPLATES.items():
+
+    def _search(tid_tkey):
+        tid, tkey = tid_tkey
         try:
-            audits = sc.search_audits(tid, modified_after, modified_before)
+            return tkey, sc.search_audits(tid, modified_after, modified_before)
+        except Exception:
+            return tkey, []
+
+    with ThreadPoolExecutor(max_workers=9) as ex:
+        for tkey, audits in ex.map(_search, TEMPLATES.items()):
             for a in audits:
                 audit_to_tkey[a["audit_id"]] = tkey
-        except Exception:
-            pass
 
-    # Fetch all audit details in parallel
-    details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()))
+    # Fetch all audit details in parallel (50 workers for speed)
+    details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()), max_workers=50)
 
     # site_name -> col_key -> {status, last_completed, audit_id, inspector}
     site_data = {}
@@ -364,9 +409,9 @@ def build_dashboard_data(from_date, to_date):
         if not site_name:
             continue
 
-        date_completed = ad.get("date_completed") or ad.get("modified_at", "")
-        owner = ad.get("owner", {})
-        inspector = owner.get("name", "") if isinstance(owner, dict) else ""
+        date_completed = ad.get("date_completed") or ad.get("date_modified", "")
+        authorship = ad.get("authorship", {})
+        inspector = authorship.get("author", "") if isinstance(authorship, dict) else ""
 
         # Determine which display columns this inspection covers
         if tkey == "PUWER_REGISTER":
@@ -423,13 +468,15 @@ def build_dashboard_data(from_date, to_date):
     total     = len(sites_list)
     compliant = sum(1 for s in sites_list if all(t["status"] == "ok" for t in s["templates"].values()))
 
-    return {
+    result = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "week_start": from_date,
         "week_end": to_date,
         "sites": sites_list,
         "summary": {"total": total, "compliant": compliant, "has_gaps": total - compliant},
     }
+    _write_cache(cache_key, result)
+    return result
 
 
 # ── API Routes ────────────────────────────────────────────
@@ -463,7 +510,7 @@ def api_sync():
     if not from_date or not to_date:
         from_date, to_date = current_week_range()
     try:
-        return jsonify(build_dashboard_data(from_date, to_date))
+        return jsonify(build_dashboard_data(from_date, to_date, force_refresh=True))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -499,13 +546,13 @@ def api_inspections():
         site_name = ad.get("site", {}).get("name", "").strip()
         if site_filter and site_filter not in site_name.lower():
             continue
-        owner = ad.get("owner", {})
+        authorship = ad.get("authorship", {})
         results.append({
             "audit_id":       audit_id,
             "template":       tkey,
             "site":           site_name,
-            "date_completed": ad.get("date_completed") or ad.get("modified_at", ""),
-            "inspector":      owner.get("name", "") if isinstance(owner, dict) else "",
+            "date_completed": ad.get("date_completed") or ad.get("date_modified", ""),
+            "inspector":      authorship.get("author", "") if isinstance(authorship, dict) else "",
             "score":          ad.get("score", ""),
         })
 

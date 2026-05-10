@@ -41,10 +41,20 @@ export interface AuditDetail {
     total_score: number
     score_percentage: number
     date_completed: string
-    modified_at: string
-    site: { name: string; id?: string }
-    owner: { name?: string; id?: string } | string
+    date_modified: string
+    site: { name: string; area?: { name: string } }
+    authorship?: { author?: string; owner?: string; author_id?: string }
   }
+  header_items: Array<{
+    item_id: string
+    label: string
+    type: string
+    responses?: {
+      text?: string
+      datetime?: string
+      selected?: Array<{ id: string; label?: string }>
+    }
+  }>
   items: Array<{
     item_id: string
     label: string

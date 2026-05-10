@@ -25,7 +25,7 @@ def get_sites():
         sites.extend(body.get("data", []))
         next_token = body.get("metadata", {}).get("next_page_token")
         if next_token:
-            params = {"limit": 100, "page_token": next_token}
+            params = {"limit": 100, "next_page_token": next_token}
         else:
             url = None
     return {"sites": sites}

@@ -42,7 +42,7 @@ export default function InspectionDetail() {
   if (!data) return null
 
   const ad = data.audit_data
-  const inspector = typeof ad.owner === 'object' ? ad.owner?.name ?? '—' : String(ad.owner ?? '—')
+  const inspector = ad.authorship?.author ?? '—'
   const siteName = ad.site?.name ?? '—'
   const scorePct = ad.score_percentage != null ? Math.round(ad.score_percentage) : null
   const scUrl = `https://app.safetyculture.io/audits/${auditId}`
@@ -83,7 +83,7 @@ export default function InspectionDetail() {
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-1">
-          <MetaItem label="Date" value={fmtDateTime(ad.date_completed || ad.modified_at)} />
+          <MetaItem label="Date" value={fmtDateTime(ad.date_completed || ad.date_modified)} />
           <MetaItem label="Inspector" value={inspector} />
           <MetaItem label="Site" value={siteName} />
           {scorePct != null && (
