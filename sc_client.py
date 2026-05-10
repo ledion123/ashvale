@@ -32,6 +32,8 @@ def get_sites():
 
 
 def search_audits(template_id, modified_after, modified_before, limit=200):
+    """Fetch all audits for a template, handling pagination."""
+    audits = []
     params = {
         "template": template_id,
         "modified_after": modified_after,
@@ -39,9 +41,16 @@ def search_audits(template_id, modified_after, modified_before, limit=200):
         "completed": "true",
         "limit": limit,
     }
-    r = requests.get(f"{BASE}/audits/search", headers=_headers(), params=params, timeout=TIMEOUT)
-    r.raise_for_status()
-    return r.json().get("audits", [])
+    while True:
+        r = requests.get(f"{BASE}/audits/search", headers=_headers(), params=params, timeout=TIMEOUT)
+        r.raise_for_status()
+        body = r.json()
+        audits.extend(body.get("audits", []))
+        next_token = body.get("metadata", {}).get("next_page_token")
+        if not next_token:
+            break
+        params = {**params, "next_page_token": next_token}
+    return audits
 
 
 def get_audit(audit_id):

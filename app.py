@@ -452,9 +452,11 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
             )
             serials = extract_serials(all_text)
             site_serials.setdefault(gkey, {})
-            for ck in col_keys:
-                site_serials[gkey].setdefault(ck, set())
-                site_serials[gkey][ck].update(serials)
+            # PUWER_REGISTER covers all machine types — store under "PUWER" only.
+            # Individual machine audits (EXCAVATOR, LOLER, etc.) store under their own key.
+            serial_col = "PUWER" if tkey == "PUWER_REGISTER" else tkey
+            site_serials[gkey].setdefault(serial_col, set())
+            site_serials[gkey][serial_col].update(serials)
 
     # Build output
     sites_list = []
@@ -526,6 +528,12 @@ def api_dashboard():
     to_date   = request.args.get("to")
     if not from_date or not to_date:
         from_date, to_date = current_week_range()
+    else:
+        try:
+            datetime.strptime(from_date, "%Y-%m-%d")
+            datetime.strptime(to_date, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"error": "Dates must be in YYYY-MM-DD format"}), 400
     try:
         return jsonify(build_dashboard_data(from_date, to_date))
     except Exception as e:
@@ -555,39 +563,42 @@ def api_inspections():
     if not from_date or not to_date:
         from_date, to_date = current_week_range()
 
-    modified_after  = to_iso(from_date)
-    modified_before = to_iso(to_date, end=True)
+    try:
+        modified_after  = to_iso(from_date)
+        modified_before = to_iso(to_date, end=True)
 
-    audit_to_tkey = {}
-    for tid, tkey in TEMPLATES.items():
-        if template_filter and tkey != template_filter:
-            continue
-        try:
-            for a in sc.search_audits(tid, modified_after, modified_before):
-                audit_to_tkey[a["audit_id"]] = tkey
-        except Exception:
-            pass
+        audit_to_tkey = {}
+        for tid, tkey in TEMPLATES.items():
+            if template_filter and tkey != template_filter:
+                continue
+            try:
+                for a in sc.search_audits(tid, modified_after, modified_before):
+                    audit_to_tkey[a["audit_id"]] = tkey
+            except Exception:
+                pass
 
-    details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()))
-    results = []
-    for audit_id, detail in details.items():
-        tkey = audit_to_tkey[audit_id]
-        ad   = detail.get("audit_data", {})
-        site_name = ad.get("site", {}).get("name", "").strip()
-        if site_filter and site_filter not in site_name.lower():
-            continue
-        authorship = ad.get("authorship", {})
-        results.append({
-            "audit_id":       audit_id,
-            "template":       tkey,
-            "site":           site_name,
-            "date_completed": ad.get("date_completed") or ad.get("date_modified", ""),
-            "inspector":      authorship.get("author", "") if isinstance(authorship, dict) else "",
-            "score":          ad.get("score", ""),
-        })
+        details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()))
+        results = []
+        for audit_id, detail in details.items():
+            tkey = audit_to_tkey[audit_id]
+            ad   = detail.get("audit_data", {})
+            site_name = ad.get("site", {}).get("name", "").strip()
+            if site_filter and site_filter not in site_name.lower():
+                continue
+            authorship = ad.get("authorship", {})
+            results.append({
+                "audit_id":       audit_id,
+                "template":       tkey,
+                "site":           site_name,
+                "date_completed": ad.get("date_completed") or ad.get("date_modified", ""),
+                "inspector":      authorship.get("author", "") if isinstance(authorship, dict) else "",
+                "score":          ad.get("score", ""),
+            })
 
-    results.sort(key=lambda x: x["date_completed"], reverse=True)
-    return jsonify({"inspections": results})
+        results.sort(key=lambda x: x["date_completed"] or "", reverse=True)
+        return jsonify({"inspections": results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/inspections/<audit_id>")
@@ -642,11 +653,14 @@ def api_parse_sites():
             if site_col is not None:
                 break
 
+        if site_col is None:
+            return jsonify({"error": "Could not find a 'Site' column in the first 10 rows of the Excel file"}), 400
+
         sites = []
         for row in ws.iter_rows(min_row=header_row + 1):
             def cv(idx):
                 return str(row[idx].value or "").strip() if idx is not None and idx < len(row) else ""
-            name = cv(site_col) if site_col is not None else ""
+            name = cv(site_col)
             if not name:
                 continue
             job  = normalize_job(cv(job_col)) if job_col is not None else ""
@@ -672,13 +686,16 @@ def generate():
     if not excel_file or not excel_file.filename:
         return jsonify({"error": "Please upload your weekly Excel template"}), 400
 
-    excel_bytes = excel_file.read()
-    pdf_bytes   = pdf_file.read() if pdf_file and pdf_file.filename else None
+    try:
+        excel_bytes = excel_file.read()
+        pdf_bytes   = pdf_file.read() if pdf_file and pdf_file.filename else None
 
-    out = generate_report(from_date, to_date, excel_bytes, pdf_bytes)
-    filename = f"Ashvale_Summary_{from_date}_to_{to_date}.xlsx"
-    return send_file(out, as_attachment=True, download_name=filename,
-                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        out = generate_report(from_date, to_date, excel_bytes, pdf_bytes)
+        filename = f"Ashvale_Summary_{from_date}_to_{to_date}.xlsx"
+        return send_file(out, as_attachment=True, download_name=filename,
+                         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ── Serve React app (catch-all for client-side routing) ──

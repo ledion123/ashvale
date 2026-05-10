@@ -79,16 +79,6 @@ export default function Dashboard() {
     }
   }
 
-  const addUnmatchedSite = useCallback((scName: string) => {
-    const firstWord = scName.trim().split(/\s+/)[0] ?? ''
-    const isJobCode = /^[A-Z]{1,4}\d{2,}$/i.test(firstWord)
-    const jobCode = isJobCode ? normalizeJob(firstWord) : ''
-    const newSite: ActiveSite = { name: scName, job_code: jobCode, supervisor: '' }
-    const updated = [...(activeSites ?? []), newSite]
-    saveActiveSites(updated)
-    setActiveSites(updated)
-  }, [activeSites])
-
   const handleSitesUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -106,7 +96,7 @@ export default function Dashboard() {
     }
   }
 
-  // Merge activeSites into the API response, filter to active sites, track unmatched
+  // Merge activeSites into the API response; auto-include unmatched sites (no supervisor)
   const { enrichedSites, unmatchedSites } = useMemo(() => {
     if (!data) return { enrichedSites: [], unmatchedSites: [] as { name: string; reason: string }[] }
     if (!activeSites) return { enrichedSites: data.sites, unmatchedSites: [] as { name: string; reason: string }[] }
@@ -114,8 +104,15 @@ export default function Dashboard() {
     const unmatchedSites: { name: string; reason: string }[] = []
     for (const site of data.sites) {
       const m = matchActiveSite(site.name, activeSites)
-      if (m) enrichedSites.push({ ...site, job_code: m.job_code || site.job_code, supervisor: m.supervisor })
-      else unmatchedSites.push({ name: site.name, reason: getUnmatchReason(site.name) })
+      if (m) {
+        enrichedSites.push({ ...site, job_code: m.job_code || site.job_code, supervisor: m.supervisor })
+      } else {
+        const firstWord = site.name.trim().split(/\s+/)[0] ?? ''
+        const isJobCode = /^[A-Z]{1,4}\d{2,}$/i.test(firstWord)
+        const jobCode = isJobCode ? normalizeJob(firstWord) : (site.job_code ?? '')
+        enrichedSites.push({ ...site, job_code: jobCode, supervisor: '' })
+        unmatchedSites.push({ name: site.name, reason: getUnmatchReason(site.name) })
+      }
     }
     return { enrichedSites, unmatchedSites }
   }, [data, activeSites])
@@ -198,29 +195,21 @@ export default function Dashboard() {
                 onClick={() => setShowUnmatched(v => !v)}
                 className="text-xs text-amber-400/70 cursor-pointer border border-amber-500/20 px-2 py-1 rounded-md hover:bg-amber-500/10 transition-colors"
               >
-                ⚠ {unmatchedSites.length} site{unmatchedSites.length > 1 ? 's' : ''} not matched
+                ⚠ {unmatchedSites.length} without Excel match
               </button>
               {showUnmatched && (
                 <div className="absolute right-0 top-full mt-1 z-50 bg-[#1a1d27] border border-[#2a2d3a] rounded-xl shadow-xl p-3 min-w-[320px]">
-                  <p className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">Unmatched sites</p>
+                  <p className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">Shown without Excel match</p>
                   <ul className="space-y-2">
                     {unmatchedSites.map(({ name, reason }) => (
-                      <li key={name} className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm text-slate-200 font-medium">{name}</p>
-                          <p className="text-xs text-amber-400/70">{reason}</p>
-                        </div>
-                        <button
-                          onClick={() => addUnmatchedSite(name)}
-                          className="shrink-0 text-xs text-emerald-400 hover:text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded transition-colors mt-0.5"
-                        >
-                          + Add
-                        </button>
+                      <li key={name}>
+                        <p className="text-sm text-slate-200 font-medium">{name}</p>
+                        <p className="text-xs text-amber-400/70">{reason}</p>
                       </li>
                     ))}
                   </ul>
                   <p className="text-[11px] text-slate-600 mt-3 border-t border-[#2a2d3a] pt-2">
-                    Fix by adding the job code to the Excel, or matching the site name.
+                    These sites are visible but supervisor info is unavailable. Add them to the Excel to include supervisor.
                   </p>
                 </div>
               )}
