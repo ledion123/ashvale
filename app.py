@@ -409,7 +409,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
     def _group_key(sc_name):
         first = sc_name.split()[0] if sc_name else ""
         if re.match(r'^[A-Z]{1,4}\d{2,}$', first, re.I):
-            return normalize_job(first), first, normalize_job(first)
+            return normalize_job(first), sc_name, normalize_job(first)
         return sc_name, sc_name, ""
 
     for audit_id, detail in details.items():
