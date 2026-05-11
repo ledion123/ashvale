@@ -220,77 +220,82 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
     matched   = {}
     row_notes = {}
 
-    headers = {"Authorization": f"Bearer {os.environ.get('SAFETYCULTURE_API_TOKEN', '')}"}
+    from concurrent.futures import ThreadPoolExecutor
 
-    for tid, tkey in TEMPLATES.items():
-        r = requests.get("https://api.safetyculture.io/audits/search", headers=headers, params={
-            "template": tid,
-            "modified_after": modified_after,
-            "modified_before": modified_before,
-            "completed": "true",
-            "limit": 100
-        })
-        audits = r.json().get("audits", [])
+    audit_to_tkey = {}
 
-        for a in audits:
-            r2    = requests.get(f"https://api.safetyculture.io/audits/{a['audit_id']}", headers=headers)
-            d     = r2.json()
-            ad    = d.get("audit_data", {})
-            items = d.get("items", [])
-            sc_site = ad.get("site", {}).get("name", "").strip()
+    def _search(tid_tkey):
+        tid, tkey = tid_tkey
+        try:
+            return tkey, sc.search_audits(tid, modified_after, modified_before)
+        except Exception:
+            return tkey, []
 
-            row_num = find_row(sc_site, job_lookup, name_lookup)
-            if row_num is None:
-                continue
+    with ThreadPoolExecutor(max_workers=9) as ex:
+        for tkey, audits in ex.map(_search, TEMPLATES.items()):
+            for a in audits:
+                audit_to_tkey[a["audit_id"]] = tkey
 
-            matched.setdefault(row_num, set())
-            row_notes.setdefault(row_num, [])
-            display = "PUWER" if tkey == "PUWER_REGISTER" else tkey
+    details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()), max_workers=50)
 
-            if tkey == "PUWER_REGISTER":
-                for col_key in PUWER_COLUMNS:
-                    mark_cell(ws, row_num, COL_COMPLIANCE[col_key], True)
-                    matched[row_num].add(col_key)
-            elif tkey in COL_COMPLIANCE:
-                mark_cell(ws, row_num, COL_COMPLIANCE[tkey], True)
-                matched[row_num].add(tkey)
+    for audit_id, d in details.items():
+        tkey    = audit_to_tkey[audit_id]
+        ad      = d.get("audit_data", {})
+        items   = d.get("items", [])
+        sc_site = ad.get("site", {}).get("name", "").strip()
 
-            if tkey in ("LOLER", "EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND") or tkey == "PUWER_REGISTER":
-                all_text = ""
-                for item in items:
-                    responses = item.get("responses", {})
-                    all_text += " " + (responses.get("text") or "")
-                    all_text += " " + (item.get("note") or "")
-                found_serials = extract_serials(all_text)
+        row_num = find_row(sc_site, job_lookup, name_lookup)
+        if row_num is None:
+            continue
 
-                if pdf_bytes:
-                    norm_job   = row_to_normjob.get(row_num, "")
-                    registered = set()
-                    if norm_job and norm_job in pdf_machines:
-                        if tkey == "PUWER_REGISTER":
-                            for mt in ("EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND"):
-                                registered |= pdf_machines[norm_job].get(mt, set())
-                        else:
-                            registered = pdf_machines[norm_job].get(tkey, set())
-                    if not found_serials:
-                        append_note(row_notes, row_num, f"No serial no. on {display}")
-                    else:
-                        missing = registered - found_serials
-                        unknown = found_serials - registered
-                        if missing:
-                            append_note(row_notes, row_num, f"Not inspected ({display}): {', '.join(sorted(missing))}")
-                        if unknown:
-                            append_note(row_notes, row_num, f"Not in register ({display}): {', '.join(sorted(unknown))}")
-                else:
-                    if not found_serials:
-                        append_note(row_notes, row_num, f"No serial no. on {display}")
+        matched.setdefault(row_num, set())
+        row_notes.setdefault(row_num, [])
+        display = "PUWER" if tkey == "PUWER_REGISTER" else tkey
 
+        if tkey == "PUWER_REGISTER":
+            for col_key in PUWER_COLUMNS:
+                mark_cell(ws, row_num, COL_COMPLIANCE[col_key], True)
+                matched[row_num].add(col_key)
+        elif tkey in COL_COMPLIANCE:
+            mark_cell(ws, row_num, COL_COMPLIANCE[tkey], True)
+            matched[row_num].add(tkey)
+
+        if tkey in ("LOLER", "EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND") or tkey == "PUWER_REGISTER":
+            all_text = ""
             for item in items:
-                selected = item.get("responses", {}).get("selected", [])
-                status   = selected[0].get("label", "").strip() if selected else ""
-                if status == "At Risk":
-                    label = (item.get("label") or "").strip()
-                    append_note(row_notes, row_num, f"At Risk: {label[:40]} ({display})")
+                responses = item.get("responses", {})
+                all_text += " " + (responses.get("text") or "")
+                all_text += " " + (item.get("note") or "")
+            found_serials = extract_serials(all_text)
+
+            if pdf_bytes:
+                norm_job   = row_to_normjob.get(row_num, "")
+                registered = set()
+                if norm_job and norm_job in pdf_machines:
+                    if tkey == "PUWER_REGISTER":
+                        for mt in ("EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND"):
+                            registered |= pdf_machines[norm_job].get(mt, set())
+                    else:
+                        registered = pdf_machines[norm_job].get(tkey, set())
+                if not found_serials:
+                    append_note(row_notes, row_num, f"No serial no. on {display}")
+                else:
+                    missing = registered - found_serials
+                    unknown = found_serials - registered
+                    if missing:
+                        append_note(row_notes, row_num, f"Not inspected ({display}): {', '.join(sorted(missing))}")
+                    if unknown:
+                        append_note(row_notes, row_num, f"Not in register ({display}): {', '.join(sorted(unknown))}")
+            else:
+                if not found_serials:
+                    append_note(row_notes, row_num, f"No serial no. on {display}")
+
+        for item in items:
+            selected = item.get("responses", {}).get("selected", [])
+            status   = selected[0].get("label", "").strip() if selected else ""
+            if status == "At Risk":
+                label = (item.get("label") or "").strip()
+                append_note(row_notes, row_num, f"At Risk: {label[:40]} ({display})")
 
     for row in ws.iter_rows(min_row=header_row + 1):
         if not row[0].value:

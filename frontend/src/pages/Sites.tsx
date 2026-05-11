@@ -11,7 +11,14 @@ export default function Sites() {
   const location = useLocation()
   const initialFilter = (location.state as { filter?: string })?.filter ?? ''
 
-  const week = useMemo(() => getWeekRange(0), [])
+  const week = useMemo(() => {
+    try {
+      const s = localStorage.getItem('ashvale_selected_week')
+      if (s) return JSON.parse(s) as { from: string; to: string; label: string }
+    } catch {}
+    return getWeekRange(0)
+  }, [])
+
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')

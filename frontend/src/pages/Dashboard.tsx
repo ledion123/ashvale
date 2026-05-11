@@ -19,6 +19,10 @@ export default function Dashboard() {
   const [weekOffset, setWeekOffset] = useState(0)
   const week = useMemo(() => getWeekRange(weekOffset), [weekOffset])
 
+  useEffect(() => {
+    localStorage.setItem('ashvale_selected_week', JSON.stringify({ from: week.from, to: week.to, label: week.label }))
+  }, [week.from, week.to, week.label])
+
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
