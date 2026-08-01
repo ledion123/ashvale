@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { X, Upload, FileSpreadsheet, FileText } from 'lucide-react'
 
 function getWeekDates() {
@@ -19,6 +19,8 @@ export default function GenerateModal() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const closeBtnRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     const { from, to } = getWeekDates()
@@ -30,11 +32,36 @@ export default function GenerateModal() {
     return () => document.removeEventListener('open-generate-modal', handler)
   }, [])
 
+  useEffect(() => {
+    if (open) closeBtnRef.current?.focus()
+  }, [open])
+
   const close = () => {
     setOpen(false)
     setError('')
     setSuccess(false)
     setLoading(false)
+  }
+
+  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Escape') {
+      close()
+      return
+    }
+    if (e.key !== 'Tab' || !dialogRef.current) return
+    const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    )
+    if (focusable.length === 0) return
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault()
+      last.focus()
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault()
+      first.focus()
+    }
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -77,15 +104,21 @@ export default function GenerateModal() {
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onKeyDown={handleKeyDown}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={close} />
-      <div className="relative bg-[#1a1d27] border border-[#2a2d3a] rounded-2xl w-full max-w-md shadow-2xl">
-        <div className="flex items-center justify-between px-6 py-5 border-b border-[#2a2d3a]">
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="generate-modal-title"
+        className="relative bg-surface border border-edge rounded-2xl w-full max-w-md shadow-2xl"
+      >
+        <div className="flex items-center justify-between px-6 py-5 border-b border-edge">
           <div>
-            <h2 className="text-white font-semibold text-base">Generate Excel Report</h2>
+            <h2 id="generate-modal-title" className="text-white font-semibold text-base">Generate Excel Report</h2>
             <p className="text-slate-500 text-xs mt-0.5">Upload your template, pick a date range, download</p>
           </div>
-          <button onClick={close} className="text-slate-500 hover:text-white transition-colors p-1">
+          <button ref={closeBtnRef} onClick={close} aria-label="Close" className="text-slate-500 hover:text-white transition-colors p-1">
             <X size={18} />
           </button>
         </div>
@@ -114,7 +147,7 @@ export default function GenerateModal() {
                 type="date"
                 value={fromDate}
                 onChange={e => setFromDate(e.target.value)}
-                className="w-full bg-[#0f1117] border border-[#2a2d3a] rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500 [color-scheme:dark]"
+                className="w-full bg-base border border-edge rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500 [color-scheme:dark]"
               />
             </div>
             <div>
@@ -123,7 +156,7 @@ export default function GenerateModal() {
                 type="date"
                 value={toDate}
                 onChange={e => setToDate(e.target.value)}
-                className="w-full bg-[#0f1117] border border-[#2a2d3a] rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500 [color-scheme:dark]"
+                className="w-full bg-base border border-edge rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500 [color-scheme:dark]"
               />
             </div>
           </div>
@@ -169,7 +202,7 @@ function UploadField({
         className={`border rounded-lg px-4 py-3 cursor-pointer flex items-center gap-3 transition-colors ${
           file
             ? 'border-green-500/50 bg-green-500/5'
-            : 'border-[#2a2d3a] hover:border-[#3a3d4a] bg-[#0f1117]'
+            : 'border-edge hover:border-edge-hover bg-base'
         }`}
       >
         {icon}

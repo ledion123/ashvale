@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom'
 import { ArrowLeft, ExternalLink, AlertCircle, CheckCircle, XCircle, Minus } from 'lucide-react'
 import { fetchInspectionDetail } from '../lib/api'
 import { fmtDateTime } from '../lib/dates'
+import Spinner from '../components/Spinner'
 import type { AuditDetail } from '../types'
 
 export default function InspectionDetail() {
@@ -23,7 +24,7 @@ export default function InspectionDetail() {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[300px]">
-        <div className="inline-block w-8 h-8 border-2 border-[#3a3d4a] border-t-blue-500 rounded-full animate-spin" />
+        <Spinner />
       </div>
     )
   }
@@ -65,7 +66,7 @@ export default function InspectionDetail() {
       <BackLink />
 
       {/* Header card */}
-      <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-xl p-5 space-y-4">
+      <div className="bg-surface border border-edge rounded-xl p-5 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-white font-semibold text-lg leading-snug">{ad.name}</h1>
@@ -90,7 +91,7 @@ export default function InspectionDetail() {
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Score</p>
               <div className="flex items-center gap-2">
-                <div className="flex-1 h-1.5 bg-[#0f1117] rounded-full overflow-hidden">
+                <div className="flex-1 h-1.5 bg-base rounded-full overflow-hidden">
                   <div
                     className={`h-full rounded-full ${scorePct >= 80 ? 'bg-green-500' : scorePct >= 60 ? 'bg-amber-500' : 'bg-red-500'}`}
                     style={{ width: `${scorePct}%` }}
@@ -107,11 +108,11 @@ export default function InspectionDetail() {
 
       {/* Inspection items */}
       {sections.map((section, si) => (
-        <div key={si} className="bg-[#1a1d27] border border-[#2a2d3a] rounded-xl overflow-hidden">
-          <div className="px-4 py-3 border-b border-[#2a2d3a] bg-[#13161f]">
+        <div key={si} className="bg-surface border border-edge rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-edge bg-overlay">
             <h2 className="text-slate-300 font-semibold text-sm">{section.title}</h2>
           </div>
-          <div className="divide-y divide-[#2a2d3a]/50">
+          <div className="divide-y divide-edge/50">
             {section.items.map((item, ii) => (
               <ItemRow key={item.item_id ?? ii} item={item} />
             ))}

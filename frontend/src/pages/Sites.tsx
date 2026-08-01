@@ -3,9 +3,8 @@ import { Link, useLocation } from 'react-router-dom'
 import { RefreshCw, AlertCircle, CheckCircle, XCircle, Clock } from 'lucide-react'
 import { fetchDashboard } from '../lib/api'
 import { getWeekRange } from '../lib/dates'
-import type { DashboardData, Site } from '../types'
-
-const COLUMNS = ['EXCAVATOR', 'LOLER', 'DUMPER', 'ROLLER', 'TELEHAND', 'PUWER', 'SITE SUP', 'HAVS', 'TOOLBOX']
+import Spinner from '../components/Spinner'
+import { COLUMNS, type DashboardData, type Site } from '../types'
 
 export default function Sites() {
   const location = useLocation()
@@ -68,12 +67,12 @@ export default function Sites() {
             placeholder="Filter sites…"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg px-3 py-1.5 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 w-44"
+            className="bg-surface border border-edge rounded-lg px-3 py-1.5 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 w-44"
           />
           <select
             value={sortBy}
             onChange={e => setSortBy(e.target.value as 'gaps' | 'name')}
-            className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg px-3 py-1.5 text-sm text-slate-300 focus:outline-none focus:border-blue-500 [color-scheme:dark]"
+            className="bg-surface border border-edge rounded-lg px-3 py-1.5 text-sm text-slate-300 focus:outline-none focus:border-blue-500 [color-scheme:dark]"
           >
             <option value="gaps">Sort: Most gaps first</option>
             <option value="name">Sort: A–Z</option>
@@ -96,8 +95,8 @@ export default function Sites() {
       )}
 
       {loading && !data && (
-        <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-xl p-12 text-center">
-          <div className="inline-block w-8 h-8 border-2 border-[#3a3d4a] border-t-blue-500 rounded-full animate-spin mb-4" />
+        <div className="bg-surface border border-edge rounded-xl p-12 text-center">
+          <Spinner className="w-8 h-8 mb-4" />
           <p className="text-slate-400 text-sm">Loading…</p>
         </div>
       )}
@@ -130,7 +129,7 @@ function SiteCard({ site }: { site: Site }) {
     pct === 100 ? 'border-green-500/30' : missing > 0 ? 'border-red-500/20' : 'border-amber-500/20'
 
   return (
-    <div className={`bg-[#1a1d27] border ${borderColor} rounded-xl p-4 space-y-3 hover:bg-[#1e2132] transition-colors`}>
+    <div className={`bg-surface border ${borderColor} rounded-xl p-4 space-y-3 hover:bg-surface-hover transition-colors`}>
       <div>
         <p className="text-white font-semibold text-sm leading-snug">{site.name}</p>
       </div>
@@ -155,7 +154,7 @@ function SiteCard({ site }: { site: Site }) {
       </div>
 
       {/* Progress bar */}
-      <div className="h-1.5 bg-[#0f1117] rounded-full overflow-hidden">
+      <div className="h-1.5 bg-base rounded-full overflow-hidden">
         <div
           className={`h-full rounded-full transition-all ${pct === 100 ? 'bg-green-500' : missing > 0 ? 'bg-red-500' : 'bg-amber-500'}`}
           style={{ width: `${pct}%` }}
@@ -168,20 +167,28 @@ function SiteCard({ site }: { site: Site }) {
           const t = site.templates[col]
           const s = t?.status ?? 'missing'
           return (
-            <div key={col} title={`${col}: ${s}`}>
+            <div key={col}>
               {t?.audit_id && (s === 'ok' || s === 'overdue') ? (
                 <Link
                   to={`/inspections/${t.audit_id}`}
-                  className={`inline-block w-5 h-5 rounded text-[9px] font-bold flex items-center justify-center transition-opacity hover:opacity-80 ${
-                    s === 'ok'
-                      ? 'bg-green-500/20 text-green-400'
-                      : 'bg-amber-500/20 text-amber-400'
-                  }`}
+                  title={`${col}: ${s}`}
+                  aria-label={`${col}: ${s}`}
+                  className="inline-flex items-center justify-center w-11 h-11 -m-3"
                 >
-                  {col.slice(0, 2)}
+                  <span
+                    className={`inline-flex w-5 h-5 rounded text-[9px] font-bold items-center justify-center transition-opacity hover:opacity-80 ${
+                      s === 'ok'
+                        ? 'bg-green-500/20 text-green-400'
+                        : 'bg-amber-500/20 text-amber-400'
+                    }`}
+                  >
+                    {col.slice(0, 2)}
+                  </span>
                 </Link>
               ) : (
                 <span
+                  title={`${col}: ${s}`}
+                  aria-label={`${col}: ${s}`}
                   className={`inline-flex w-5 h-5 rounded text-[9px] font-bold items-center justify-center ${
                     s === 'ok'
                       ? 'bg-green-500/20 text-green-400'

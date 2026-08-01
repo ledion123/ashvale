@@ -3,8 +3,8 @@ import { LayoutDashboard, MapPin } from 'lucide-react'
 
 export default function Layout() {
   return (
-    <div className="min-h-screen bg-[#0f1117]">
-      <header className="sticky top-0 z-20 border-b border-[#2a2d3a] bg-[#13161f]/95 backdrop-blur">
+    <div className="min-h-screen bg-base">
+      <header className="sticky top-0 z-20 border-b border-edge bg-overlay/95 backdrop-blur">
         <div className="max-w-[1440px] mx-auto px-5 h-13 flex items-center gap-6" style={{ height: 52 }}>
           <div className="flex items-center gap-2.5 mr-2">
             <div className="w-6 h-6 rounded bg-blue-600 flex items-center justify-center">
@@ -46,7 +46,7 @@ export default function Layout() {
                 e.preventDefault()
                 document.dispatchEvent(new CustomEvent('open-generate-modal'))
               }}
-              className="text-xs font-medium text-slate-400 hover:text-white border border-[#2a2d3a] hover:border-[#3a3d4a] px-3 py-1.5 rounded-md transition-colors"
+              className="text-xs font-medium text-slate-400 hover:text-white border border-edge hover:border-edge-hover px-3 py-1.5 rounded-md transition-colors"
             >
               Generate Excel Report
             </a>

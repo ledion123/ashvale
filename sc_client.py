@@ -6,10 +6,10 @@ BASE = "https://api.safetyculture.io"
 TIMEOUT = 20
 
 
-_FALLBACK_TOKEN = "scapi_Nf7mSyq59RHTFKowB4IwfB1jrAUMLHOcP9Q1IVZTNxnr56rlQBIprIrT8E7cwsQcYQeEXvblPcAI1CfSYz2JpDK-8Uh4jzk1ihDKYUmU60bLbqzZp2vr-QudExowN_vj1VESr35mw4SUQMXNoLil-rtxzFeuoKaScvAsWyclZ4w"
-
 def _headers():
-    token = os.environ.get("SAFETYCULTURE_API_TOKEN") or _FALLBACK_TOKEN
+    token = os.environ.get("SAFETYCULTURE_API_TOKEN")
+    if not token:
+        raise RuntimeError("SAFETYCULTURE_API_TOKEN is not set")
     return {"Authorization": f"Bearer {token}"}
 
 

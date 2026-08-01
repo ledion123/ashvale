@@ -3,17 +3,12 @@ import { Link } from 'react-router-dom'
 import { RefreshCw, ChevronLeft, ChevronRight, AlertCircle, FileUp, Users } from 'lucide-react'
 import StatusTile from '../components/StatusTile'
 import StatusCell from '../components/StatusCell'
+import Spinner from '../components/Spinner'
 import { fetchDashboard, syncDashboard, uploadRegister, uploadSites } from '../lib/api'
 import { getWeekRange } from '../lib/dates'
 import { getRegister, saveRegister, computeNotes, type PlantRegister } from '../lib/register'
 import { getActiveSites, saveActiveSites, matchActiveSite, getUnmatchReason, normalizeJob, type ActiveSite } from '../lib/sites'
-import type { DashboardData, Site } from '../types'
-
-const COLUMNS = ['EXCAVATOR', 'LOLER', 'DUMPER', 'ROLLER', 'TELEHAND', 'PUWER', 'SITE SUP', 'HAVS', 'TOOLBOX']
-const ABBREV: Record<string, string> = {
-  EXCAVATOR: 'EXC', LOLER: 'LOL', DUMPER: 'DMP', ROLLER: 'ROL',
-  TELEHAND: 'TLH', PUWER: 'PUW', 'SITE SUP': 'SUP', HAVS: 'HVS', TOOLBOX: 'TBX',
-}
+import { COLUMNS, ABBREV, type DashboardData, type Site } from '../types'
 
 export default function Dashboard() {
   const [weekOffset, setWeekOffset] = useState(0)
@@ -29,6 +24,21 @@ export default function Dashboard() {
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
   const [showUnmatched, setShowUnmatched] = useState(false)
+  const unmatchedRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!showUnmatched) return
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowUnmatched(false) }
+    const onClickOutside = (e: MouseEvent) => {
+      if (unmatchedRef.current && !unmatchedRef.current.contains(e.target as Node)) setShowUnmatched(false)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    document.addEventListener('mousedown', onClickOutside)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('mousedown', onClickOutside)
+    }
+  }, [showUnmatched])
 
   // Plant register (PDF) stored in localStorage
   const [register, setRegister] = useState<PlantRegister | null>(getRegister)
@@ -140,6 +150,7 @@ export default function Dashboard() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => setWeekOffset(w => w - 1)}
+            aria-label="Previous week"
             className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-white/10 transition-colors"
           >
             <ChevronLeft size={16} />
@@ -148,6 +159,7 @@ export default function Dashboard() {
           <button
             onClick={() => setWeekOffset(w => w + 1)}
             disabled={weekOffset >= 0}
+            aria-label="Next week"
             className="p-1.5 rounded-md text-slate-400 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <ChevronRight size={16} />
@@ -168,14 +180,14 @@ export default function Dashboard() {
             placeholder="Filter sites…"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="bg-[#1a1d27] border border-[#2a2d3a] rounded-lg px-3 py-1.5 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 w-40"
+            className="bg-surface border border-edge rounded-lg px-3 py-1.5 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 w-40"
           />
 
           {/* Upload Sites Excel */}
           <label className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors cursor-pointer border ${
             activeSites
               ? 'bg-emerald-600/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-600/30'
-              : 'bg-[#1a1d27] border-[#2a2d3a] text-slate-400 hover:text-white hover:border-slate-500'
+              : 'bg-surface border-edge text-slate-400 hover:text-white hover:border-slate-500'
           } ${sitesUploading ? 'opacity-60 cursor-wait' : ''}`}>
             <Users size={13} />
             {sitesUploading ? 'Loading…' : activeSites ? `${activeSites.length} sites` : 'Upload Sites'}
@@ -186,7 +198,7 @@ export default function Dashboard() {
           <label className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors cursor-pointer border ${
             register
               ? 'bg-violet-600/20 border-violet-500/30 text-violet-400 hover:bg-violet-600/30'
-              : 'bg-[#1a1d27] border-[#2a2d3a] text-slate-400 hover:text-white hover:border-slate-500'
+              : 'bg-surface border-edge text-slate-400 hover:text-white hover:border-slate-500'
           } ${registerUploading ? 'opacity-60 cursor-wait' : ''}`}>
             <FileUp size={13} />
             {registerUploading ? 'Parsing…' : register ? 'Register ✓' : 'Upload Register'}
@@ -194,15 +206,16 @@ export default function Dashboard() {
           </label>
 
           {unmatchedSites.length > 0 && (
-            <div className="relative">
+            <div className="relative" ref={unmatchedRef}>
               <button
                 onClick={() => setShowUnmatched(v => !v)}
+                aria-expanded={showUnmatched}
                 className="text-xs text-amber-400/70 cursor-pointer border border-amber-500/20 px-2 py-1 rounded-md hover:bg-amber-500/10 transition-colors"
               >
                 ⚠ {unmatchedSites.length} without Excel match
               </button>
               {showUnmatched && (
-                <div className="absolute right-0 top-full mt-1 z-50 bg-[#1a1d27] border border-[#2a2d3a] rounded-xl shadow-xl p-3 min-w-[320px]">
+                <div className="absolute right-0 top-full mt-1 z-50 bg-surface border border-edge rounded-xl shadow-xl p-3 min-w-[320px]">
                   <p className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">Shown without Excel match</p>
                   <ul className="space-y-2">
                     {unmatchedSites.map(({ name, reason }) => (
@@ -212,7 +225,7 @@ export default function Dashboard() {
                       </li>
                     ))}
                   </ul>
-                  <p className="text-[11px] text-slate-600 mt-3 border-t border-[#2a2d3a] pt-2">
+                  <p className="text-[11px] text-slate-600 mt-3 border-t border-edge pt-2">
                     These sites are visible but supervisor info is unavailable. Add them to the Excel to include supervisor.
                   </p>
                 </div>
@@ -248,8 +261,8 @@ export default function Dashboard() {
 
       {/* Loading */}
       {loading && !data && (
-        <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-xl p-12 text-center">
-          <div className="inline-block w-8 h-8 border-2 border-[#3a3d4a] border-t-blue-500 rounded-full animate-spin mb-4" />
+        <div className="bg-surface border border-edge rounded-xl p-12 text-center">
+          <Spinner className="w-8 h-8 mb-4" />
           <p className="text-slate-400 text-sm">Loading inspection data from SafetyCulture…</p>
           <p className="text-slate-600 text-xs mt-1">This may take 30–60 seconds on first load</p>
         </div>
@@ -257,16 +270,16 @@ export default function Dashboard() {
 
       {/* Compliance matrix */}
       {data && (
-        <div className="rounded-xl border border-[#2a2d3a] overflow-hidden">
+        <div className="rounded-xl border border-edge overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
-                <tr className="bg-[#1a1d27]">
-                  <th className="text-left px-4 py-3 text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-[#2a2d3a] w-48 sticky left-0 bg-[#1a1d27] z-10">
+                <tr className="bg-surface">
+                  <th className="text-left px-4 py-3 text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge w-48 sticky left-0 bg-surface z-10">
                     Site
                   </th>
                   {showSupervisor && (
-                    <th className="px-3 py-3 text-left text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-[#2a2d3a] w-32">
+                    <th className="px-3 py-3 text-left text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge w-32">
                       Supervisor
                     </th>
                   )}
@@ -274,16 +287,16 @@ export default function Dashboard() {
                     <th
                       key={col}
                       title={col}
-                      className="px-2 py-3 text-center text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-[#2a2d3a] min-w-[52px]"
+                      className="px-2 py-3 text-center text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge min-w-[52px]"
                     >
                       {ABBREV[col]}
                     </th>
                   ))}
-                  <th className="px-4 py-3 text-left text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-[#2a2d3a] w-20">
+                  <th className="px-4 py-3 text-left text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge w-20">
                     Status
                   </th>
                   {showNotes && (
-                    <th className="px-4 py-3 text-left text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-[#2a2d3a] min-w-[200px]">
+                    <th className="px-4 py-3 text-left text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge min-w-[200px]">
                       Notes
                     </th>
                   )}
@@ -312,11 +325,15 @@ export default function Dashboard() {
           </div>
 
           {/* Legend */}
-          <div className="flex items-center gap-5 px-4 py-3 border-t border-[#2a2d3a] bg-[#13161f]">
+          <div className="flex items-center gap-5 px-4 py-3 border-t border-edge bg-overlay">
             <span className="text-[11px] text-slate-600 font-medium">Legend:</span>
             <LegendItem icon="✓" color="text-green-400" label="Completed this week" />
             <LegendItem icon="⏱" color="text-amber-400" label="Overdue" />
             <LegendItem icon="✗" color="text-red-500" label="Missing" />
+            <div className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-orange-400" />
+              <span className="text-[11px] text-slate-600">PUWER Register only — no individual inspection filed</span>
+            </div>
           </div>
         </div>
       )}
@@ -344,7 +361,7 @@ function SiteRow({
   const notes  = register ? computeNotes(site, register) : []
 
   return (
-    <tr className={`border-b border-[#2a2d3a]/60 ${idx % 2 === 1 ? 'bg-white/[0.015]' : ''} hover:bg-white/[0.03] transition-colors`}>
+    <tr className={`border-b border-edge/60 ${idx % 2 === 1 ? 'bg-white/[0.015]' : ''} hover:bg-white/[0.03] transition-colors`}>
       <td className="px-4 py-2.5 sticky left-0 bg-inherit z-10">
         <Link
           to="/sites"

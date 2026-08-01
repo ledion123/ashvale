@@ -1,10 +1,11 @@
+import hmac
 import io
 import os
 import re
 import requests
 import pdfplumber
 from datetime import datetime, timedelta, timezone
-from flask import Flask, request, send_file, jsonify, send_from_directory
+from flask import Flask, request, send_file, jsonify, send_from_directory, Response
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment
 
@@ -15,12 +16,31 @@ import sc_client as sc
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
 
+APP_USER = os.environ.get("APP_USER")
+APP_PASS = os.environ.get("APP_PASS")
+
+
+@app.before_request
+def require_auth():
+    """Gate the whole app behind HTTP Basic Auth if APP_USER/APP_PASS are set.
+    No-op when unset, so local dev without those env vars keeps working."""
+    if not APP_USER or not APP_PASS:
+        return
+    auth = request.authorization
+    valid = auth and hmac.compare_digest(auth.username, APP_USER) and hmac.compare_digest(auth.password, APP_PASS)
+    if not valid:
+        return Response("Authentication required", 401, {"WWW-Authenticate": 'Basic realm="Ashvale"'})
+
 TEMPLATES = {
     "template_7dbbb416041a44459216a2a0ba02bb10": "LOLER",
     "template_9de384b691994b498011b166402163d3": "TELEHAND",
     "template_ce94e9eade8f4a7aaa3c894cdf4b3934": "ROLLER",
     "template_785b009c0581405a86b870ecd52cfa79": "EXCAVATOR",
     "template_4d4487f16b27468ab069be1262b05376": "DUMPER",
+    # Large sites use daily check sheets bundled into one weekly upload instead of the
+    # normal template above — either one satisfies the same EXCAVATOR/DUMPER column.
+    "template_5c78491fe04347adbcbeea8b39828937": "EXCAVATOR",
+    "template_ce52353281b64255965183cd769116bd": "DUMPER",
     "template_0a8a57e828e746f782b2659da47f398d": "PUWER_REGISTER",
     "template_dbd9e89576dd43898fdd2f89e091dead": "SITE SUP",
     "template_6d565926a30944f2927a7760c343f4ee": "HAVS",
@@ -104,6 +124,13 @@ def current_week_range():
 def to_iso(date_str, end=False):
     t = "T23:59:59Z" if end else "T00:00:00Z"
     return f"{date_str}{t}"
+
+def group_site_key(sc_name):
+    """Derive (job_code_or_name, display_name, job_code) from a SafetyCulture site name."""
+    first = sc_name.split()[0] if sc_name else ""
+    if re.match(r'^[A-Z]{1,4}\d{2,}$', first, re.I):
+        return normalize_job(first), sc_name, normalize_job(first)
+    return sc_name, sc_name, ""
 
 
 # ── PDF parsing ───────────────────────────────────────────
@@ -333,6 +360,87 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
     return out
 
 
+# ── LOLER item-level coverage check ──────────────────────
+
+def check_loler_coverage(from_date, to_date, pdf_bytes):
+    """
+    Cross-reference completed LOLER audits against the plant register PDF:
+    for each site, which registered lifting-gear serials were actually
+    mentioned in the checklist responses (found_in_check) vs not (missing),
+    and which mentioned serials aren't in the register at all (unknown).
+    """
+    site_machines, _ = parse_pdf(pdf_bytes)
+
+    modified_after  = to_iso(from_date)
+    modified_before = to_iso(to_date, end=True)
+
+    loler_tid = next(tid for tid, tkey in TEMPLATES.items() if tkey == "LOLER")
+    audits  = sc.search_audits(loler_tid, modified_after, modified_before)
+    details = sc.fetch_audits_parallel([a["audit_id"] for a in audits], max_workers=20)
+
+    seen_jobs = set()
+    results   = []
+
+    for detail in details.values():
+        ad        = detail.get("audit_data", {})
+        site_name = ad.get("site", {}).get("name", "").strip()
+        if not site_name:
+            continue
+
+        _, display, job = group_site_key(site_name)
+        registered = site_machines.get(job, {}).get("LOLER", set())
+        seen_jobs.add(job)
+
+        all_text = " ".join(
+            (item.get("responses", {}).get("text") or "") + " " + (item.get("note") or "")
+            for item in detail.get("items", [])
+        )
+        found   = extract_serials(all_text)
+        missing = registered - found
+        unknown = found - registered
+
+        notes = []
+        if missing:
+            notes.append(f"Not inspected: {', '.join(sorted(missing))}")
+        if unknown:
+            notes.append(f"Not in register: {', '.join(sorted(unknown))}")
+        if registered and not found:
+            notes.append("No serial no. on LOLER")
+
+        authorship = ad.get("authorship", {})
+        results.append({
+            "site": display,
+            "job_code": job,
+            "status": "done" if ad.get("date_completed") else "missing",
+            "date_completed": ad.get("date_completed"),
+            "inspector": authorship.get("author", "") if isinstance(authorship, dict) else "",
+            "registered": sorted(registered),
+            "found_in_check": sorted(found),
+            "missing": sorted(missing),
+            "unknown": sorted(unknown),
+            "notes": "; ".join(notes) if notes else "All registered LOLER equipment checked",
+        })
+
+    # Sites with LOLER gear registered on the PDF but no LOLER audit at all this week
+    for job, machines in site_machines.items():
+        registered = machines.get("LOLER", set())
+        if registered and job not in seen_jobs:
+            results.append({
+                "site": job,
+                "job_code": job,
+                "status": "missing",
+                "date_completed": None,
+                "inspector": None,
+                "registered": sorted(registered),
+                "found_in_check": [],
+                "missing": sorted(registered),
+                "unknown": [],
+                "notes": "No LOLER inspection found this week",
+            })
+
+    return results
+
+
 # ── Dashboard cache (file-based, 1-hour TTL) ─────────────
 
 import json as _json
@@ -405,17 +513,17 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
     details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()), max_workers=50)
 
     SERIAL_CHECK_TKEYS = {"LOLER", "EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND", "PUWER_REGISTER"}
+    # Columns that have their own individual inspection template, separate from PUWER_REGISTER
+    INDIVIDUAL_COVERABLE = {"EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND"}
 
     # group_key -> col_key -> {status, last_completed, audit_id, inspector}
     # group_key is normalised job code when available (e.g. "AC23"), else full site name
     site_data    = {}
     site_serials = {}
-
-    def _group_key(sc_name):
-        first = sc_name.split()[0] if sc_name else ""
-        if re.match(r'^[A-Z]{1,4}\d{2,}$', first, re.I):
-            return normalize_job(first), sc_name, normalize_job(first)
-        return sc_name, sc_name, ""
+    # group_key -> set of col_keys satisfied by a non-PUWER_REGISTER (individual) audit
+    direct_audit_cols     = {}
+    # group_key -> set of col_keys PUWER_REGISTER marked present (answer given, not N/A)
+    puwer_register_present = {}
 
     for audit_id, detail in details.items():
         tkey = audit_to_tkey[audit_id]
@@ -424,7 +532,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
         if not site_name:
             continue
 
-        gkey, display, job = _group_key(site_name)
+        gkey, display, job = group_site_key(site_name)
 
         date_completed = ad.get("date_completed") or ad.get("date_modified", "")
         authorship = ad.get("authorship", {})
@@ -448,6 +556,22 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "audit_id": audit_id,
                     "inspector": inspector,
                 }
+
+        if tkey != "PUWER_REGISTER" and tkey in INDIVIDUAL_COVERABLE:
+            direct_audit_cols.setdefault(gkey, set()).add(tkey)
+
+        if tkey == "PUWER_REGISTER":
+            present = set()
+            for item in detail.get("items", []):
+                label_upper = (item.get("label") or "").upper()
+                mtype = next((mt for kw, mt in ASH_KEYWORDS.items() if kw in label_upper), None)
+                if not mtype:
+                    continue
+                selected = item.get("responses", {}).get("selected", [])
+                answer = selected[0].get("label", "").strip().upper() if selected else ""
+                if answer and answer != "N/A":
+                    present.add(mtype)
+            puwer_register_present.setdefault(gkey, set()).update(present)
 
         # Extract serial numbers from all item text/notes for machine-type inspections
         if tkey in SERIAL_CHECK_TKEYS:
@@ -485,12 +609,18 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                 else:
                     status = "missing"
 
+                register_only = (
+                    col_key in INDIVIDUAL_COVERABLE
+                    and col_key in puwer_register_present.get(gkey, set())
+                    and col_key not in direct_audit_cols.get(gkey, set())
+                )
                 templates_status[col_key] = {
                     "status": status,
                     "last_completed": info["last_completed"],
                     "audit_id": info["audit_id"],
                     "inspector": info["inspector"],
                     "found_serials": sorted(site_serials.get(gkey, {}).get(col_key, set())),
+                    "register_only": register_only,
                 }
             else:
                 templates_status[col_key] = {
@@ -499,6 +629,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "audit_id": None,
                     "inspector": None,
                     "found_serials": [],
+                    "register_only": False,
                 }
         sites_list.append({"name": site_name, "job_code": job_code, "templates": templates_status})
 
@@ -514,6 +645,32 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
     }
     _write_cache(cache_key, result)
     return result
+
+
+def parse_weekly_excel(excel_bytes):
+    """Sites with an 'N' in any COL_COMPLIANCE column are required that week."""
+    wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
+    ws = wb.active
+    _, _, header_row = build_lookup(ws)
+
+    sites_data = []
+    for row in ws.iter_rows(min_row=header_row + 1):
+        site_name = str(row[0].value).strip() if row[0].value else ""
+        if not site_name:
+            continue
+        job_code   = str(row[1].value).strip() if row[1].value else ""
+        supervisor = str(row[11].value).strip() if row[11].value else ""
+
+        required = [name for name, idx in COL_COMPLIANCE.items()
+                    if row[idx].value and str(row[idx].value).strip().upper() == "N"]
+        if required:
+            sites_data.append({
+                "site_name": site_name,
+                "job_code": job_code,
+                "supervisor": supervisor,
+                "required_inspections": required,
+            })
+    return sites_data
 
 
 # ── API Routes ────────────────────────────────────────────
@@ -554,6 +711,84 @@ def api_sync():
         from_date, to_date = current_week_range()
     try:
         return jsonify(build_dashboard_data(from_date, to_date, force_refresh=True))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/validate-weekly", methods=["POST"])
+def validate_weekly():
+    """Cross-check an uploaded weekly Excel (sites marked 'N' = required) against SafetyCulture completions."""
+    excel_file = request.files.get("excel")
+    if not excel_file:
+        return jsonify({"error": "No Excel file uploaded"}), 400
+
+    from_date = request.form.get("from_date")
+    to_date   = request.form.get("to_date")
+    if not from_date or not to_date:
+        from_date, to_date = current_week_range()
+
+    try:
+        sites_data = parse_weekly_excel(excel_file.read())
+        if not sites_data:
+            return jsonify({"error": "No sites found in Excel or no inspections marked with 'N'"}), 400
+
+        dashboard = build_dashboard_data(from_date, to_date)
+        by_job  = {s["job_code"]: s for s in dashboard["sites"] if s["job_code"]}
+        by_name = {s["name"].lower(): s for s in dashboard["sites"]}
+
+        results = []
+        for site in sites_data:
+            job     = normalize_job(site["job_code"]) if site["job_code"] else ""
+            sc_site = by_job.get(job) or by_name.get(site["site_name"].lower())
+
+            inspections = {}
+            missing = []
+            for insp in site["required_inspections"]:
+                info = sc_site["templates"].get(insp) if sc_site else None
+                done = bool(info) and info["status"] != "missing"
+                inspections[insp] = {
+                    "status": "done" if done else "missing",
+                    "date_completed": info["last_completed"] if done else None,
+                    "inspector": info["inspector"] if done else None,
+                }
+                if not done:
+                    missing.append(insp)
+
+            results.append({
+                "site": site["site_name"],
+                "job_code": site["job_code"],
+                "supervisor": site["supervisor"],
+                "inspections": inspections,
+                "missing_inspections": missing,
+                "notes": f"Missing: {', '.join(missing)}" if missing else "All inspections completed",
+            })
+
+        return jsonify({
+            "week_start": from_date,
+            "week_end": to_date,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "total_sites": len(results),
+            "sites": results,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/loler-check", methods=["POST"])
+def loler_check():
+    """Cross-check completed LOLER audits against the plant register PDF, item by item."""
+    pdf_file = request.files.get("pdf")
+    if not pdf_file:
+        return jsonify({"error": "No PDF uploaded"}), 400
+
+    from_date = request.form.get("from_date")
+    to_date   = request.form.get("to_date")
+    if not from_date or not to_date:
+        from_date, to_date = current_week_range()
+
+    try:
+        sites = check_loler_coverage(from_date, to_date, pdf_file.read())
+        return jsonify({"week_start": from_date, "week_end": to_date, "sites": sites})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
