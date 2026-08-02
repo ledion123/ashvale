@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { RefreshCw, ChevronLeft, ChevronRight, FileUp, Users, X, Info, ClipboardList } from 'lucide-react'
+import { RefreshCw, ChevronLeft, ChevronRight, FileUp, Users, X, Info, ClipboardList, UserPlus } from 'lucide-react'
 import StatusTile from '../components/StatusTile'
 import StatusCell from '../components/StatusCell'
 import Spinner from '../components/Spinner'
@@ -12,8 +12,19 @@ import { getActiveSites, saveActiveSites, clearActiveSites, matchActiveSite, get
 import { setLastRegisterPdf } from '../lib/sessionFiles'
 import { STATUS_COLORS } from '../lib/statusColors'
 import { useFocusTrap } from '../lib/useFocusTrap'
-import { COLUMNS, ABBREV, type DashboardData, type Site } from '../types'
+import { COLUMNS, ABBREV, type DashboardData, type Site, type TemplateStatus } from '../types'
 import { SiteCard } from './Sites'
+
+function missingTemplates(): Record<string, TemplateStatus> {
+  return Object.fromEntries(COLUMNS.map(c => [c, {
+    status: 'missing' as const,
+    last_completed: null,
+    audit_id: null,
+    inspector: null,
+    found_serials: [],
+    register_only: false,
+  }]))
+}
 
 export default function Dashboard() {
   const [weekOffset, setWeekOffset] = useState(0)
@@ -91,7 +102,11 @@ export default function Dashboard() {
     }
   }, [])
 
-  useEffect(() => { load(week.from, week.to) }, [week.from, week.to, load])
+  const hasRoster = !!activeSites && activeSites.length > 0
+
+  useEffect(() => {
+    if (hasRoster) load(week.from, week.to)
+  }, [week.from, week.to, load, hasRoster])
 
   const handleSync = async () => {
     setSyncing(true)
@@ -160,24 +175,43 @@ export default function Dashboard() {
     setActiveSites(null)
   }
 
-  // Merge activeSites into the API response; auto-include unmatched sites (no supervisor)
+  // Your roster (activeSites) is authoritative for WHICH sites show; SafetyCulture
+  // only supplies per-site compliance status. A roster site with no matching
+  // SafetyCulture activity this week still shows, marked fully missing rather
+  // than silently disappearing.
   const { enrichedSites, unmatchedSites } = useMemo(() => {
-    if (!data) return { enrichedSites: [], unmatchedSites: [] as { name: string; job_code: string; reason: string }[] }
-    if (!activeSites) return { enrichedSites: data.sites, unmatchedSites: [] as { name: string; job_code: string; reason: string }[] }
-    const enrichedSites: Site[] = []
-    const unmatchedSites: { name: string; job_code: string; reason: string }[] = []
-    for (const site of data.sites) {
-      const m = matchActiveSite(site.name, activeSites)
-      if (m) {
-        enrichedSites.push({ ...site, job_code: m.job_code || site.job_code, supervisor: m.supervisor })
-      } else {
-        const firstWord = site.name.trim().split(/\s+/)[0] ?? ''
-        const isJobCode = /^[A-Z]{1,4}\d{2,}$/i.test(firstWord)
-        const jobCode = isJobCode ? normalizeJob(firstWord) : (site.job_code ?? '')
-        enrichedSites.push({ ...site, job_code: jobCode, supervisor: '' })
-        unmatchedSites.push({ name: site.name, job_code: jobCode, reason: getUnmatchReason(site.name) })
-      }
+    type Unmatched = { name: string; job_code: string; reason: string }
+    if (!activeSites || activeSites.length === 0 || !data) {
+      return { enrichedSites: [] as Site[], unmatchedSites: [] as Unmatched[] }
     }
+
+    const byJob = new Map<string, Site>()
+    const byName = new Map<string, Site>()
+    for (const s of data.sites) {
+      if (s.job_code) byJob.set(normalizeJob(s.job_code), s)
+      byName.set(s.name.toLowerCase(), s)
+    }
+
+    const enrichedSites: Site[] = activeSites.map(roster => {
+      const jobKey = roster.job_code ? normalizeJob(roster.job_code) : ''
+      const match = (jobKey && byJob.get(jobKey)) || byName.get(roster.name.toLowerCase())
+      if (match) {
+        return { ...match, job_code: roster.job_code || match.job_code, supervisor: roster.supervisor }
+      }
+      return { name: roster.name, job_code: roster.job_code, supervisor: roster.supervisor, templates: missingTemplates() }
+    })
+
+    // SafetyCulture sites with real activity this week that aren't on your roster —
+    // informational only, doesn't feed the table.
+    const unmatchedSites: Unmatched[] = data.sites
+      .filter(s => !matchActiveSite(s.name, activeSites))
+      .map(s => {
+        const firstWord = s.name.trim().split(/\s+/)[0] ?? ''
+        const isJobCode = /^[A-Z]{1,4}\d{2,}$/i.test(firstWord)
+        const jobCode = isJobCode ? normalizeJob(firstWord) : (s.job_code ?? '')
+        return { name: s.name, job_code: jobCode, reason: getUnmatchReason(s.name) }
+      })
+
     return { enrichedSites, unmatchedSites }
   }, [data, activeSites])
 
@@ -192,7 +226,7 @@ export default function Dashboard() {
     Object.values(s.templates).some(t => t.status !== 'ok')
   ).length
 
-  const showSupervisor = activeSites !== null
+  const showSupervisor = hasRoster
   const showNotes = register !== null
 
   return (
@@ -351,17 +385,17 @@ export default function Dashboard() {
                 aria-expanded={showUnmatched}
                 className="text-xs text-amber-400/70 cursor-pointer border border-amber-500/20 px-2 py-1 rounded-md hover:bg-amber-500/10 transition-colors"
               >
-                ⚠ {unmatchedSites.length} without Excel match
+                ⚠ {unmatchedSites.length} sites not on your roster
               </button>
               {showUnmatched && (
                 <div
                   ref={unmatchedPanelRef}
                   role="dialog"
                   aria-modal="true"
-                  aria-label="Sites without Excel match"
+                  aria-label="Sites not on your roster"
                   className="absolute right-0 top-full mt-1 z-50 bg-surface border border-edge rounded-xl shadow-xl p-3 min-w-[320px]"
                 >
-                  <p className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">Shown without Excel match</p>
+                  <p className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">SafetyCulture activity not on your roster</p>
                   <ul className="space-y-2">
                     {unmatchedSites.map(({ name, job_code, reason }) => (
                       <li key={name} className="flex items-center justify-between gap-3">
@@ -380,7 +414,7 @@ export default function Dashboard() {
                     ))}
                   </ul>
                   <p className="text-[11px] text-slate-600 mt-3 border-t border-edge pt-2">
-                    These sites are visible but supervisor info is unavailable. Click "Add" to add them, or manage sites directly on the Manage Sites page.
+                    SafetyCulture has inspections for these sites this week, but they're not on your roster so they're hidden from the dashboard. Click "Add" to include them going forward.
                   </p>
                 </div>
               )}
@@ -397,13 +431,6 @@ export default function Dashboard() {
             {syncing ? 'Syncing…' : 'Sync Now'}
           </button>
         </div>
-      </div>
-
-      {/* Summary tiles */}
-      <div className="grid grid-cols-3 gap-4">
-        <StatusTile label="Active Sites" value={enrichedSites.length || (data?.summary.total ?? 0)} />
-        <StatusTile label="Fully Compliant" value={enrichedSites.length - gapSites} color="green" />
-        <StatusTile label="Has Gaps" value={gapSites} color="red" />
       </div>
 
       {/* Errors — scoped per action so a stale one can't be misattributed, each dismissable */}
@@ -424,102 +451,150 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Loading */}
-      {loading && !data && (
-        <div className="bg-surface border border-edge rounded-xl p-12 text-center">
-          <Spinner className="w-8 h-8 mb-4" />
-          <p className="text-slate-400 text-sm">Loading inspection data from SafetyCulture…</p>
-          <p className="text-slate-600 text-xs mt-1">This may take 30–60 seconds on first load</p>
-        </div>
-      )}
-
-      {/* Compliance matrix — card grid on narrow viewports, full table from md up */}
-      {data && (
+      {!hasRoster ? (
+        <EmptyRosterState onUpload={handleSitesUpload} uploading={sitesUploading} />
+      ) : (
         <>
-          <div className="md:hidden grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {filteredSites.length === 0 ? (
-              <div className="col-span-full py-10 text-center text-slate-600 text-sm bg-surface border border-edge rounded-xl">
-                {search ? `No sites matching "${search}"` : 'No inspection data found for this week'}
-              </div>
-            ) : (
-              filteredSites.map(site => <SiteCard key={site.name} site={site} from="dashboard" />)
-            )}
+          {/* Summary tiles */}
+          <div className="grid grid-cols-3 gap-4">
+            <StatusTile label="Active Sites" value={activeSites?.length ?? 0} />
+            <StatusTile label="Fully Compliant" value={enrichedSites.length - gapSites} color="green" />
+            <StatusTile label="Has Gaps" value={gapSites} color="red" />
           </div>
 
-          <div className="hidden md:block rounded-xl border border-edge overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm border-collapse">
-              <thead>
-                <tr className="bg-surface">
-                  <th className="text-left px-4 py-3 text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge w-48 sticky left-0 bg-surface z-10">
-                    Site
-                  </th>
-                  {showSupervisor && (
-                    <th className="px-3 py-3 text-left text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge w-32">
-                      Supervisor
-                    </th>
-                  )}
-                  {COLUMNS.map(col => (
-                    <th
-                      key={col}
-                      title={col}
-                      className="px-2 py-3 text-center text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge min-w-[52px]"
-                    >
-                      {ABBREV[col]}
-                    </th>
-                  ))}
-                  <th className="px-4 py-3 text-left text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge w-20">
-                    Status
-                  </th>
-                  {showNotes && (
-                    <th className="px-4 py-3 text-left text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge min-w-[200px]">
-                      Notes
-                    </th>
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {filteredSites.length === 0 && (
-                  <tr>
-                    <td colSpan={COLUMNS.length + (showSupervisor ? 1 : 0) + (showNotes ? 1 : 0) + 2} className="px-4 py-10 text-center text-slate-600 text-sm">
-                      {search ? `No sites matching "${search}"` : 'No inspection data found for this week'}
-                    </td>
-                  </tr>
-                )}
-                {filteredSites.map((site, i) => (
-                  <SiteRow
-                    key={site.name}
-                    site={site}
-                    idx={i}
-                    showSupervisor={showSupervisor}
-                    register={register}
-                    showNotes={showNotes}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Legend */}
-          <div className="flex items-center gap-5 px-4 py-3 border-t border-edge bg-overlay">
-            <span className="text-[11px] text-slate-600 font-medium">Legend:</span>
-            <LegendItem icon="✓" color="text-green-400" label="Completed this week" />
-            <LegendItem icon="⏱" color="text-amber-400" label="Overdue" />
-            <LegendItem icon="✗" color="text-red-500" label="Missing" />
-            <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full bg-orange-400" />
-              <span className="text-[11px] text-slate-600">PUWER Register only — no individual inspection filed</span>
+          {/* Loading */}
+          {loading && !data && (
+            <div className="bg-surface border border-edge rounded-xl p-12 text-center">
+              <Spinner className="w-8 h-8 mb-4" />
+              <p className="text-slate-400 text-sm">Loading inspection data from SafetyCulture…</p>
+              <p className="text-slate-600 text-xs mt-1">This may take 30–60 seconds on first load</p>
             </div>
-          </div>
-          </div>
+          )}
+
+          {/* Compliance matrix — card grid on narrow viewports, full table from md up */}
+          {data && (
+            <>
+              <div className="md:hidden grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {filteredSites.length === 0 ? (
+                  <div className="col-span-full py-10 text-center text-slate-600 text-sm bg-surface border border-edge rounded-xl">
+                    {search ? `No sites matching "${search}"` : 'No sites on your roster'}
+                  </div>
+                ) : (
+                  filteredSites.map(site => <SiteCard key={site.name} site={site} from="dashboard" />)
+                )}
+              </div>
+
+              <div className="hidden md:block rounded-xl border border-edge overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-surface">
+                      <th className="text-left px-4 py-3 text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge w-48 sticky left-0 bg-surface z-10">
+                        Site
+                      </th>
+                      {showSupervisor && (
+                        <th className="px-3 py-3 text-left text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge w-32">
+                          Supervisor
+                        </th>
+                      )}
+                      {COLUMNS.map(col => (
+                        <th
+                          key={col}
+                          title={col}
+                          className="px-2 py-3 text-center text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge min-w-[52px]"
+                        >
+                          {ABBREV[col]}
+                        </th>
+                      ))}
+                      <th className="px-4 py-3 text-left text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge w-20">
+                        Status
+                      </th>
+                      {showNotes && (
+                        <th className="px-4 py-3 text-left text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge min-w-[200px]">
+                          Notes
+                        </th>
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredSites.length === 0 && (
+                      <tr>
+                        <td colSpan={COLUMNS.length + (showSupervisor ? 1 : 0) + (showNotes ? 1 : 0) + 2} className="px-4 py-10 text-center text-slate-600 text-sm">
+                          {search ? `No sites matching "${search}"` : 'No sites on your roster'}
+                        </td>
+                      </tr>
+                    )}
+                    {filteredSites.map((site, i) => (
+                      <SiteRow
+                        key={site.name}
+                        site={site}
+                        idx={i}
+                        showSupervisor={showSupervisor}
+                        register={register}
+                        showNotes={showNotes}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Legend */}
+              <div className="flex items-center gap-5 px-4 py-3 border-t border-edge bg-overlay">
+                <span className="text-[11px] text-slate-600 font-medium">Legend:</span>
+                <LegendItem icon="✓" color="text-green-400" label="Completed this week" />
+                <LegendItem icon="⏱" color="text-amber-400" label="Overdue" />
+                <LegendItem icon="✗" color="text-red-500" label="Missing" />
+                <div className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-orange-400" />
+                  <span className="text-[11px] text-slate-600">PUWER Register only — no individual inspection filed</span>
+                </div>
+              </div>
+              </div>
+            </>
+          )}
+
+          {data && (
+            <p className="text-xs text-slate-700 text-right">
+              Last fetched: {new Date(data.generated_at).toLocaleTimeString()}
+            </p>
+          )}
         </>
       )}
+    </div>
+  )
+}
 
-      {data && (
-        <p className="text-xs text-slate-700 text-right">
-          Last fetched: {new Date(data.generated_at).toLocaleTimeString()}
+function EmptyRosterState({
+  onUpload, uploading,
+}: {
+  onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void
+  uploading: boolean
+}) {
+  return (
+    <div className="bg-surface border border-edge rounded-xl p-10 text-center space-y-4">
+      <div className="w-12 h-12 rounded-full bg-blue-500/10 flex items-center justify-center mx-auto">
+        <Users size={22} className="text-blue-400" />
+      </div>
+      <div>
+        <h2 className="text-white font-semibold text-base">No sites set up yet</h2>
+        <p className="text-slate-500 text-sm mt-1 max-w-sm mx-auto">
+          Choose which sites to track before the dashboard shows anything — add them manually, or upload an Excel with your site list.
         </p>
-      )}
+      </div>
+      <div className="flex items-center justify-center gap-3 pt-1">
+        <Link
+          to="/manage-sites"
+          className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors"
+        >
+          <UserPlus size={14} />
+          Manage Sites
+        </Link>
+        <label className={`flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg transition-colors cursor-pointer border bg-base border-edge text-slate-300 hover:text-white hover:border-slate-500 ${uploading ? 'opacity-60 cursor-wait' : ''}`}>
+          <FileUp size={14} />
+          {uploading ? 'Loading…' : 'Upload Sites Excel'}
+          <input type="file" accept=".xlsx,.xls" className="hidden" onChange={onUpload} disabled={uploading} />
+        </label>
+      </div>
     </div>
   )
 }

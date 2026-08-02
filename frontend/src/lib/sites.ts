@@ -41,9 +41,9 @@ export function getUnmatchReason(scName: string): string {
   const firstWord = scName.trim().split(/\s+/)[0] ?? ''
   const isJobCode = /^[A-Z]{1,4}\d{2,}$/i.test(firstWord)
   if (isJobCode) {
-    return `Job code "${normalizeJob(firstWord)}" not found in the Excel`
+    return `Job code "${normalizeJob(firstWord)}" not on your site list`
   }
-  return 'Name too different to match any active site'
+  return 'Name too different to match any site on your list'
 }
 
 export function matchActiveSite(scName: string, activeSites: ActiveSite[]): ActiveSite | null {
