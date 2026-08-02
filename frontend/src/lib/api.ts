@@ -24,6 +24,15 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return res.json()
 }
 
+export interface SCSite {
+  id: string
+  name: string
+}
+
+export function fetchSCSites(): Promise<{ sites: SCSite[] }> {
+  return get('/sites')
+}
+
 export function fetchDashboard(from?: string, to?: string): Promise<DashboardData> {
   const p = new URLSearchParams()
   if (from) p.set('from', from)

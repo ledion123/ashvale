@@ -28,6 +28,11 @@ function normWords(s: string): string[] {
   return s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(' ').filter(Boolean)
 }
 
+export function parseJobCode(scName: string): string {
+  const firstWord = scName.trim().split(/\s+/)[0] ?? ''
+  return /^[A-Z]{1,4}\d{2,}$/i.test(firstWord) ? normalizeJob(firstWord) : ''
+}
+
 export function getUnmatchReason(scName: string): string {
   const firstWord = scName.trim().split(/\s+/)[0] ?? ''
   const isJobCode = /^[A-Z]{1,4}\d{2,}$/i.test(firstWord)
