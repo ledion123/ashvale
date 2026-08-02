@@ -18,6 +18,10 @@ export function saveRegister(r: PlantRegister): void {
   localStorage.setItem(KEY, JSON.stringify(r))
 }
 
+export function clearRegister(): void {
+  localStorage.removeItem(KEY)
+}
+
 const PUWER_MACHINE_TYPES = ['EXCAVATOR', 'DUMPER', 'ROLLER', 'TELEHAND']
 
 export function computeNotes(site: Site, register: PlantRegister): string[] {

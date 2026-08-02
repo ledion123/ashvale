@@ -5,9 +5,11 @@ import { fmtDate } from '../lib/dates'
 interface Props {
   status: TemplateStatus | undefined
   column: string
+  /** Where this cell is rendered from, so InspectionDetail's back link can return here. */
+  from?: 'dashboard' | 'sites'
 }
 
-export default function StatusCell({ status, column }: Props) {
+export default function StatusCell({ status, column, from = 'dashboard' }: Props) {
   if (!status) {
     return <span className="text-slate-700 text-base leading-none">—</span>
   }
@@ -47,6 +49,7 @@ export default function StatusCell({ status, column }: Props) {
     return (
       <Link
         to={`/inspections/${audit_id}`}
+        state={{ from }}
         title={tooltip}
         aria-label={tooltip}
         className="relative inline-flex items-center justify-center w-11 h-11 -m-2.5"

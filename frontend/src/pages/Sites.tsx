@@ -117,7 +117,7 @@ export default function Sites() {
   )
 }
 
-function SiteCard({ site }: { site: Site }) {
+export function SiteCard({ site, from = 'sites' }: { site: Site; from?: 'dashboard' | 'sites' }) {
   const statuses = Object.values(site.templates)
   const ok = statuses.filter(t => t.status === 'ok').length
   const overdue = statuses.filter(t => t.status === 'overdue').length
@@ -171,6 +171,7 @@ function SiteCard({ site }: { site: Site }) {
               {t?.audit_id && (s === 'ok' || s === 'overdue') ? (
                 <Link
                   to={`/inspections/${t.audit_id}`}
+                  state={{ from }}
                   title={`${col}: ${s}`}
                   aria-label={`${col}: ${s}`}
                   className="inline-flex items-center justify-center w-11 h-11 -m-3"

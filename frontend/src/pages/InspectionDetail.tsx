@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, useLocation, Link } from 'react-router-dom'
 import { ArrowLeft, ExternalLink, AlertCircle, CheckCircle, XCircle, Minus } from 'lucide-react'
 import { fetchInspectionDetail } from '../lib/api'
 import { fmtDateTime } from '../lib/dates'
@@ -124,13 +124,18 @@ export default function InspectionDetail() {
 }
 
 function BackLink() {
+  const location = useLocation()
+  const from = (location.state as { from?: 'dashboard' | 'sites' })?.from ?? 'dashboard'
+  const to = from === 'sites' ? '/sites' : '/'
+  const label = from === 'sites' ? 'Back to Sites' : 'Back to Dashboard'
+
   return (
     <Link
-      to="/"
+      to={to}
       className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-white transition-colors"
     >
       <ArrowLeft size={14} />
-      Back to Dashboard
+      {label}
     </Link>
   )
 }

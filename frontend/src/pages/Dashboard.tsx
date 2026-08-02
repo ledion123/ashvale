@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { RefreshCw, ChevronLeft, ChevronRight, AlertCircle, FileUp, Users } from 'lucide-react'
+import { RefreshCw, ChevronLeft, ChevronRight, AlertCircle, FileUp, Users, X, Info } from 'lucide-react'
 import StatusTile from '../components/StatusTile'
 import StatusCell from '../components/StatusCell'
 import Spinner from '../components/Spinner'
 import { fetchDashboard, syncDashboard, uploadRegister, uploadSites } from '../lib/api'
 import { getWeekRange } from '../lib/dates'
-import { getRegister, saveRegister, computeNotes, type PlantRegister } from '../lib/register'
-import { getActiveSites, saveActiveSites, matchActiveSite, getUnmatchReason, normalizeJob, type ActiveSite } from '../lib/sites'
+import { getRegister, saveRegister, clearRegister, computeNotes, type PlantRegister } from '../lib/register'
+import { getActiveSites, saveActiveSites, clearActiveSites, matchActiveSite, getUnmatchReason, normalizeJob, type ActiveSite } from '../lib/sites'
+import { setLastRegisterPdf } from '../lib/sessionFiles'
 import { COLUMNS, ABBREV, type DashboardData, type Site } from '../types'
+import { SiteCard } from './Sites'
 
 export default function Dashboard() {
   const [weekOffset, setWeekOffset] = useState(0)
@@ -21,7 +23,12 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(false)
   const [syncing, setSyncing] = useState(false)
-  const [error, setError] = useState('')
+  // Scoped per action so one failure can't show a stale/misattributed message
+  // over an unrelated action, and each can be dismissed independently.
+  const [loadError, setLoadError] = useState('')
+  const [syncError, setSyncError] = useState('')
+  const [registerError, setRegisterError] = useState('')
+  const [sitesError, setSitesError] = useState('')
   const [search, setSearch] = useState('')
   const [showUnmatched, setShowUnmatched] = useState(false)
   const unmatchedRef = useRef<HTMLDivElement>(null)
@@ -50,15 +57,21 @@ export default function Dashboard() {
   const [sitesUploading, setSitesUploading] = useState(false)
   const sitesRef = useRef<HTMLInputElement>(null)
 
+  // Guards against an older in-flight request resolving after a newer one
+  // (e.g. rapid week navigation) and clobbering the current week's data.
+  const loadIdRef = useRef(0)
+
   const load = useCallback(async (from: string, to: string) => {
+    const requestId = ++loadIdRef.current
     setLoading(true)
-    setError('')
+    setLoadError('')
     try {
-      setData(await fetchDashboard(from, to))
+      const d = await fetchDashboard(from, to)
+      if (requestId === loadIdRef.current) setData(d)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load dashboard')
+      if (requestId === loadIdRef.current) setLoadError(e instanceof Error ? e.message : 'Failed to load dashboard')
     } finally {
-      setLoading(false)
+      if (requestId === loadIdRef.current) setLoading(false)
     }
   }, [])
 
@@ -66,11 +79,11 @@ export default function Dashboard() {
 
   const handleSync = async () => {
     setSyncing(true)
-    setError('')
+    setSyncError('')
     try {
       setData(await syncDashboard(week.from, week.to))
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Sync failed')
+      setSyncError(e instanceof Error ? e.message : 'Sync failed')
     } finally {
       setSyncing(false)
     }
@@ -80,34 +93,55 @@ export default function Dashboard() {
     const file = e.target.files?.[0]
     if (!file) return
     setRegisterUploading(true)
-    setError('')
+    setRegisterError('')
     try {
       const { register: r } = await uploadRegister(file)
       saveRegister(r)
       setRegister(r)
+      setLastRegisterPdf(file)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to upload register')
+      setRegisterError(err instanceof Error ? err.message : 'Failed to upload register')
     } finally {
       setRegisterUploading(false)
       if (registerRef.current) registerRef.current.value = ''
     }
   }
 
+  const handleClearRegister = () => {
+    clearRegister()
+    setRegister(null)
+    setLastRegisterPdf(null)
+  }
+
   const handleSitesUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
+    if (activeSites && activeSites.length > 0) {
+      const ok = window.confirm(
+        `This replaces your current ${activeSites.length} sites (including any manual edits) with what's in this Excel. Continue?`
+      )
+      if (!ok) {
+        if (sitesRef.current) sitesRef.current.value = ''
+        return
+      }
+    }
     setSitesUploading(true)
-    setError('')
+    setSitesError('')
     try {
       const { sites } = await uploadSites(file)
       saveActiveSites(sites)
       setActiveSites(sites)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to upload sites Excel')
+      setSitesError(err instanceof Error ? err.message : 'Failed to upload sites Excel')
     } finally {
       setSitesUploading(false)
       if (sitesRef.current) sitesRef.current.value = ''
     }
+  }
+
+  const handleClearSites = () => {
+    clearActiveSites()
+    setActiveSites(null)
   }
 
   // Merge activeSites into the API response; auto-include unmatched sites (no supervisor)
@@ -184,26 +218,54 @@ export default function Dashboard() {
           />
 
           {/* Upload Sites Excel */}
-          <label className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors cursor-pointer border ${
-            activeSites
-              ? 'bg-emerald-600/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-600/30'
-              : 'bg-surface border-edge text-slate-400 hover:text-white hover:border-slate-500'
-          } ${sitesUploading ? 'opacity-60 cursor-wait' : ''}`}>
-            <Users size={13} />
-            {sitesUploading ? 'Loading…' : activeSites ? `${activeSites.length} sites` : 'Upload Sites'}
-            <input ref={sitesRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleSitesUpload} disabled={sitesUploading} />
-          </label>
+          <div className="flex items-center">
+            <label className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors cursor-pointer border ${
+              activeSites ? 'rounded-l-lg' : 'rounded-lg'
+            } ${
+              activeSites
+                ? 'bg-emerald-600/20 border-emerald-500/30 text-emerald-400 hover:bg-emerald-600/30'
+                : 'bg-surface border-edge text-slate-400 hover:text-white hover:border-slate-500'
+            } ${sitesUploading ? 'opacity-60 cursor-wait' : ''}`}>
+              <Users size={13} />
+              {sitesUploading ? 'Loading…' : activeSites ? `${activeSites.length} sites` : 'Upload Sites'}
+              <input ref={sitesRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleSitesUpload} disabled={sitesUploading} />
+            </label>
+            {activeSites && !sitesUploading && (
+              <button
+                onClick={handleClearSites}
+                aria-label="Clear uploaded sites Excel"
+                title="Clear uploaded sites Excel"
+                className="px-2 py-1.5 rounded-r-lg border border-l-0 border-emerald-500/30 text-emerald-400 hover:bg-emerald-600/30 transition-colors"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
 
           {/* Upload Plant Register PDF */}
-          <label className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors cursor-pointer border ${
-            register
-              ? 'bg-violet-600/20 border-violet-500/30 text-violet-400 hover:bg-violet-600/30'
-              : 'bg-surface border-edge text-slate-400 hover:text-white hover:border-slate-500'
-          } ${registerUploading ? 'opacity-60 cursor-wait' : ''}`}>
-            <FileUp size={13} />
-            {registerUploading ? 'Parsing…' : register ? 'Register ✓' : 'Upload Register'}
-            <input ref={registerRef} type="file" accept=".pdf" className="hidden" onChange={handleRegisterUpload} disabled={registerUploading} />
-          </label>
+          <div className="flex items-center">
+            <label className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium transition-colors cursor-pointer border ${
+              register ? 'rounded-l-lg' : 'rounded-lg'
+            } ${
+              register
+                ? 'bg-violet-600/20 border-violet-500/30 text-violet-400 hover:bg-violet-600/30'
+                : 'bg-surface border-edge text-slate-400 hover:text-white hover:border-slate-500'
+            } ${registerUploading ? 'opacity-60 cursor-wait' : ''}`}>
+              <FileUp size={13} />
+              {registerUploading ? 'Parsing…' : register ? 'Register ✓' : 'Upload Register'}
+              <input ref={registerRef} type="file" accept=".pdf" className="hidden" onChange={handleRegisterUpload} disabled={registerUploading} />
+            </label>
+            {register && !registerUploading && (
+              <button
+                onClick={handleClearRegister}
+                aria-label="Clear uploaded plant register"
+                title="Clear uploaded plant register"
+                className="px-2 py-1.5 rounded-r-lg border border-l-0 border-violet-500/30 text-violet-400 hover:bg-violet-600/30 transition-colors"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
 
           {unmatchedSites.length > 0 && (
             <div className="relative" ref={unmatchedRef}>
@@ -260,11 +322,21 @@ export default function Dashboard() {
         <StatusTile label="Has Gaps" value={gapSites} color="red" />
       </div>
 
-      {/* Error */}
-      {error && (
-        <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-400 rounded-lg px-4 py-3 text-sm">
-          <AlertCircle size={15} />
-          {error}
+      {/* Errors — scoped per action so a stale one can't be misattributed, each dismissable */}
+      <ErrorBanner message={loadError} onDismiss={() => setLoadError('')} />
+      <ErrorBanner message={syncError} onDismiss={() => setSyncError('')} />
+      <ErrorBanner message={registerError} onDismiss={() => setRegisterError('')} />
+      <ErrorBanner message={sitesError} onDismiss={() => setSitesError('')} />
+
+      {/* Local-storage disclosure — supervisor/notes data is per-browser, not shared */}
+      {(activeSites || register) && (
+        <div className="flex items-center gap-2 text-slate-600 text-xs">
+          <Info size={13} />
+          {activeSites && register
+            ? 'Uploaded sites and plant register are saved in this browser only — not visible on other devices.'
+            : activeSites
+            ? 'Uploaded sites Excel is saved in this browser only — not visible on other devices.'
+            : 'Uploaded plant register is saved in this browser only — not visible on other devices.'}
         </div>
       )}
 
@@ -277,9 +349,20 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Compliance matrix */}
+      {/* Compliance matrix — card grid on narrow viewports, full table from md up */}
       {data && (
-        <div className="rounded-xl border border-edge overflow-hidden">
+        <>
+          <div className="md:hidden grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {filteredSites.length === 0 ? (
+              <div className="col-span-full py-10 text-center text-slate-600 text-sm bg-surface border border-edge rounded-xl">
+                {search ? `No sites matching "${search}"` : 'No inspection data found for this week'}
+              </div>
+            ) : (
+              filteredSites.map(site => <SiteCard key={site.name} site={site} from="dashboard" />)
+            )}
+          </div>
+
+          <div className="hidden md:block rounded-xl border border-edge overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm border-collapse">
               <thead>
@@ -344,7 +427,8 @@ export default function Dashboard() {
               <span className="text-[11px] text-slate-600">PUWER Register only — no individual inspection filed</span>
             </div>
           </div>
-        </div>
+          </div>
+        </>
       )}
 
       {data && (
@@ -415,6 +499,19 @@ function SiteRow({
         </td>
       )}
     </tr>
+  )
+}
+
+function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  if (!message) return null
+  return (
+    <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-400 rounded-lg px-4 py-3 text-sm">
+      <AlertCircle size={15} className="shrink-0" />
+      <span className="flex-1">{message}</span>
+      <button onClick={onDismiss} aria-label="Dismiss" className="text-red-400/70 hover:text-red-300 transition-colors shrink-0">
+        <X size={15} />
+      </button>
+    </div>
   )
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { X, Upload, FileSpreadsheet, FileText } from 'lucide-react'
+import { X, Upload, FileSpreadsheet, FileText, RotateCcw } from 'lucide-react'
+import { getLastRegisterPdf } from '../lib/sessionFiles'
 
 function getWeekDates() {
   const today = new Date()
@@ -16,6 +17,7 @@ export default function GenerateModal() {
   const [toDate, setToDate] = useState('')
   const [excelFile, setExcelFile] = useState<File | null>(null)
   const [pdfFile, setPdfFile] = useState<File | null>(null)
+  const [reusablePdf, setReusablePdf] = useState<File | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState(false)
@@ -31,6 +33,10 @@ export default function GenerateModal() {
     document.addEventListener('open-generate-modal', handler)
     return () => document.removeEventListener('open-generate-modal', handler)
   }, [])
+
+  useEffect(() => {
+    if (open) setReusablePdf(getLastRegisterPdf())
+  }, [open])
 
   useEffect(() => {
     if (open) closeBtnRef.current?.focus()
@@ -139,6 +145,16 @@ export default function GenerateModal() {
             onChange={setPdfFile}
             icon={<FileText size={20} className="text-slate-500" />}
           />
+          {reusablePdf && !pdfFile && (
+            <button
+              type="button"
+              onClick={() => setPdfFile(reusablePdf)}
+              className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors -mt-2"
+            >
+              <RotateCcw size={12} />
+              Reuse "{reusablePdf.name}" already uploaded on the Dashboard
+            </button>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>

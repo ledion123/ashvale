@@ -19,6 +19,10 @@ export function saveActiveSites(sites: ActiveSite[]): void {
   localStorage.setItem(KEY, JSON.stringify(sites))
 }
 
+export function clearActiveSites(): void {
+  localStorage.removeItem(KEY)
+}
+
 export function normalizeJob(code: string): string {
   const m = code.toUpperCase().match(/^([A-Z]+)(\d+)$/)
   return m ? m[1] + String(parseInt(m[2], 10)) : code.toUpperCase()

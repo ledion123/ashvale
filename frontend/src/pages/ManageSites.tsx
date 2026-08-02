@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Plus, Pencil, Trash2, ChevronDown, Loader2 } from 'lucide-react'
+import { Plus, Pencil, Trash2, ChevronDown, Loader2, Check, X, CheckCircle2 } from 'lucide-react'
 import { getActiveSites, saveActiveSites, parseJobCode, type ActiveSite } from '../lib/sites'
 import { fetchSCSites, type SCSite } from '../lib/api'
 
@@ -14,6 +14,13 @@ export default function ManageSites() {
   const [form, setForm] = useState<ActiveSite>({ ...EMPTY, ...prefill })
   const [editIndex, setEditIndex] = useState<number | null>(null)
   const [search, setSearch] = useState('')
+  const [pendingRemove, setPendingRemove] = useState<number | null>(null)
+  const [feedback, setFeedback] = useState('')
+
+  const flash = (message: string) => {
+    setFeedback(message)
+    window.setTimeout(() => setFeedback(f => (f === message ? '' : f)), 3000)
+  }
 
   // "Add from SafetyCulture" dropdown — multi-select from real SC sites,
   // for when the site can't be found/matched in the uploaded Excel.
@@ -79,6 +86,7 @@ export default function ManageSites() {
       supervisor: '',
     }))
     persist([...sites, ...additions])
+    flash(`Added ${additions.length} site${additions.length === 1 ? '' : 's'}`)
     setScSelected(new Set())
   }
 
@@ -99,8 +107,10 @@ export default function ManageSites() {
       const next = [...sites]
       next[editIndex] = entry
       persist(next)
+      flash(`Saved ${entry.name}`)
     } else {
       persist([...sites, entry])
+      flash(`Added ${entry.name}`)
     }
     setForm(EMPTY)
     setEditIndex(null)
@@ -109,6 +119,7 @@ export default function ManageSites() {
   const handleEdit = (i: number) => {
     setForm(sites[i])
     setEditIndex(i)
+    setPendingRemove(null)
   }
 
   const handleCancelEdit = () => {
@@ -117,8 +128,11 @@ export default function ManageSites() {
   }
 
   const handleRemove = (i: number) => {
+    const removed = sites[i]
     persist(sites.filter((_, idx) => idx !== i))
     if (editIndex === i) handleCancelEdit()
+    setPendingRemove(null)
+    flash(`Removed ${removed.name}`)
   }
 
   const q = search.toLowerCase()
@@ -205,6 +219,13 @@ export default function ManageSites() {
         </div>
       </div>
 
+      {feedback && (
+        <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-lg px-4 py-2.5 text-sm">
+          <CheckCircle2 size={15} />
+          {feedback}
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} className="bg-surface border border-edge rounded-xl p-4 flex flex-wrap items-end gap-3">
         <div className="flex-1 min-w-[220px]">
           <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 mb-1">Site name</label>
@@ -258,6 +279,7 @@ export default function ManageSites() {
       </form>
 
       <div className="rounded-xl border border-edge overflow-hidden">
+        <div className="overflow-x-auto">
         <table className="w-full text-sm border-collapse">
           <thead>
             <tr className="bg-surface">
@@ -283,20 +305,41 @@ export default function ManageSites() {
                   <td className="px-4 py-2.5 text-slate-400">{s.job_code || <span className="text-slate-700">—</span>}</td>
                   <td className="px-4 py-2.5 text-slate-400">{s.supervisor || <span className="text-slate-700">—</span>}</td>
                   <td className="px-4 py-2.5">
-                    <div className="flex items-center gap-3 justify-end">
-                      <button onClick={() => handleEdit(realIndex)} aria-label={`Edit ${s.name}`} className="text-slate-500 hover:text-white transition-colors">
-                        <Pencil size={14} />
-                      </button>
-                      <button onClick={() => handleRemove(realIndex)} aria-label={`Remove ${s.name}`} className="text-slate-500 hover:text-red-400 transition-colors">
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
+                    {pendingRemove === realIndex ? (
+                      <div className="flex items-center gap-2 justify-end">
+                        <span className="text-xs text-red-400">Remove?</span>
+                        <button
+                          onClick={() => handleRemove(realIndex)}
+                          aria-label={`Confirm remove ${s.name}`}
+                          className="text-red-400 hover:text-red-300 transition-colors"
+                        >
+                          <Check size={14} />
+                        </button>
+                        <button
+                          onClick={() => setPendingRemove(null)}
+                          aria-label="Cancel remove"
+                          className="text-slate-500 hover:text-white transition-colors"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-3 justify-end">
+                        <button onClick={() => handleEdit(realIndex)} aria-label={`Edit ${s.name}`} className="text-slate-500 hover:text-white transition-colors">
+                          <Pencil size={14} />
+                        </button>
+                        <button onClick={() => setPendingRemove(realIndex)} aria-label={`Remove ${s.name}`} className="text-slate-500 hover:text-red-400 transition-colors">
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               )
             })}
           </tbody>
         </table>
+        </div>
       </div>
 
       <p className="text-xs text-slate-600">

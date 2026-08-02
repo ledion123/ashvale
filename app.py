@@ -1,9 +1,12 @@
 import hmac
 import io
+import json as _json
 import os
 import re
+import tempfile
 import requests
 import pdfplumber
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from flask import Flask, request, send_file, jsonify, send_from_directory, Response
 import openpyxl
@@ -124,6 +127,44 @@ def current_week_range():
 def to_iso(date_str, end=False):
     t = "T23:59:59Z" if end else "T00:00:00Z"
     return f"{date_str}{t}"
+
+def valid_date_format(*dates):
+    try:
+        for d in dates:
+            datetime.strptime(d, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+def search_templates(templates, modified_after, modified_before, max_workers=9):
+    """
+    Search all given templates ({template_id: tkey}) in parallel.
+    Returns (audit_to_tkey, errors) — errors is a list of {"template", "error"}
+    for templates whose search failed. Raises RuntimeError if EVERY template
+    failed (e.g. a bad/expired SAFETYCULTURE_API_TOKEN), so callers surface a
+    real error instead of silently reporting zero results as if compliant.
+    """
+    audit_to_tkey = {}
+    errors = []
+
+    def _search(tid_tkey):
+        tid, tkey = tid_tkey
+        try:
+            return tkey, sc.search_audits(tid, modified_after, modified_before), None
+        except Exception as e:
+            return tkey, [], str(e)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for tkey, audits, error in ex.map(_search, templates.items()):
+            if error:
+                errors.append({"template": tkey, "error": error})
+            for a in audits:
+                audit_to_tkey[a["audit_id"]] = tkey
+
+    if templates and len(errors) == len(templates):
+        raise RuntimeError(f"SafetyCulture search failed for all templates: {errors[0]['error']}")
+
+    return audit_to_tkey, errors
 
 def group_site_key(sc_name):
     """Derive (job_code_or_name, display_name, job_code) from a SafetyCulture site name."""
@@ -247,22 +288,7 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
     matched   = {}
     row_notes = {}
 
-    from concurrent.futures import ThreadPoolExecutor
-
-    audit_to_tkey = {}
-
-    def _search(tid_tkey):
-        tid, tkey = tid_tkey
-        try:
-            return tkey, sc.search_audits(tid, modified_after, modified_before)
-        except Exception:
-            return tkey, []
-
-    with ThreadPoolExecutor(max_workers=9) as ex:
-        for tkey, audits in ex.map(_search, TEMPLATES.items()):
-            for a in audits:
-                audit_to_tkey[a["audit_id"]] = tkey
-
+    audit_to_tkey, _ = search_templates(TEMPLATES, modified_after, modified_before)
     details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()), max_workers=50)
 
     for audit_id, d in details.items():
@@ -441,10 +467,13 @@ def check_loler_coverage(from_date, to_date, pdf_bytes):
     return results
 
 
-# ── Dashboard cache (file-based, 1-hour TTL) ─────────────
-
-import json as _json
-import tempfile
+# ── Dashboard cache (file-based, 1-hour TTL, best-effort) ─
+# NOTE: this is a per-instance cache, not a shared/distributed one. On
+# serverless platforms (e.g. Vercel) each function instance has its own
+# ephemeral /tmp, so a cache hit is a same-instance speedup only, not a
+# guarantee — concurrent requests may land on different instances and each
+# do their own SafetyCulture fetch. That's an acceptable tradeoff (still
+# saves real requests when it hits) without adding external cache infra.
 
 _CACHE_FILE = os.path.join(tempfile.gettempdir(), "ashvale_dashboard_cache.json")
 _CACHE_TTL  = 3600  # seconds
@@ -468,8 +497,16 @@ def _write_cache(cache_key, data):
         except Exception:
             store = {}
         store[cache_key] = {"ts": datetime.now(timezone.utc).timestamp(), "data": data}
-        with open(_CACHE_FILE, "w") as f:
-            _json.dump(store, f)
+        # Write to a temp file then rename atomically, so a concurrent reader/writer
+        # on this same instance never sees a partially-written or lost-update file.
+        fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(_CACHE_FILE), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                _json.dump(store, f)
+            os.replace(tmp_path, _CACHE_FILE)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
     except Exception:
         pass
 
@@ -479,7 +516,8 @@ def _write_cache(cache_key, data):
 def build_dashboard_data(from_date, to_date, force_refresh=False):
     """
     Fetch completed inspections for the selected week.
-    Results are cached for 1 hour to keep subsequent loads instant.
+    Results are cached for 1 hour (best-effort, per-instance — see cache
+    section above) to keep subsequent loads on the same instance instant.
     """
     cache_key = f"{from_date}:{to_date}"
     if not force_refresh:
@@ -493,21 +531,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
     week_start = datetime.strptime(from_date, "%Y-%m-%d").date()
 
     # Search all templates in parallel, then fetch audit details in parallel
-    from concurrent.futures import ThreadPoolExecutor
-
-    audit_to_tkey = {}
-
-    def _search(tid_tkey):
-        tid, tkey = tid_tkey
-        try:
-            return tkey, sc.search_audits(tid, modified_after, modified_before)
-        except Exception:
-            return tkey, []
-
-    with ThreadPoolExecutor(max_workers=9) as ex:
-        for tkey, audits in ex.map(_search, TEMPLATES.items()):
-            for a in audits:
-                audit_to_tkey[a["audit_id"]] = tkey
+    audit_to_tkey, search_errors = search_templates(TEMPLATES, modified_after, modified_before)
 
     # Fetch all audit details in parallel (50 workers for speed)
     details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()), max_workers=50)
@@ -643,6 +667,8 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
         "sites": sites_list,
         "summary": {"total": total, "compliant": compliant, "has_gaps": total - compliant},
     }
+    if search_errors:
+        result["warnings"] = [f"{e['template']} search failed: {e['error']}" for e in search_errors]
     _write_cache(cache_key, result)
     return result
 
@@ -690,12 +716,8 @@ def api_dashboard():
     to_date   = request.args.get("to")
     if not from_date or not to_date:
         from_date, to_date = current_week_range()
-    else:
-        try:
-            datetime.strptime(from_date, "%Y-%m-%d")
-            datetime.strptime(to_date, "%Y-%m-%d")
-        except ValueError:
-            return jsonify({"error": "Dates must be in YYYY-MM-DD format"}), 400
+    elif not valid_date_format(from_date, to_date):
+        return jsonify({"error": "Dates must be in YYYY-MM-DD format"}), 400
     try:
         return jsonify(build_dashboard_data(from_date, to_date))
     except Exception as e:
@@ -709,6 +731,8 @@ def api_sync():
     to_date   = data.get("to")
     if not from_date or not to_date:
         from_date, to_date = current_week_range()
+    elif not valid_date_format(from_date, to_date):
+        return jsonify({"error": "Dates must be in YYYY-MM-DD format"}), 400
     try:
         return jsonify(build_dashboard_data(from_date, to_date, force_refresh=True))
     except Exception as e:
@@ -726,6 +750,8 @@ def validate_weekly():
     to_date   = request.form.get("to_date")
     if not from_date or not to_date:
         from_date, to_date = current_week_range()
+    elif not valid_date_format(from_date, to_date):
+        return jsonify({"error": "Dates must be in YYYY-MM-DD format"}), 400
 
     try:
         sites_data = parse_weekly_excel(excel_file.read())
@@ -785,6 +811,8 @@ def loler_check():
     to_date   = request.form.get("to_date")
     if not from_date or not to_date:
         from_date, to_date = current_week_range()
+    elif not valid_date_format(from_date, to_date):
+        return jsonify({"error": "Dates must be in YYYY-MM-DD format"}), 400
 
     try:
         sites = check_loler_coverage(from_date, to_date, pdf_file.read())
@@ -807,15 +835,8 @@ def api_inspections():
         modified_after  = to_iso(from_date)
         modified_before = to_iso(to_date, end=True)
 
-        audit_to_tkey = {}
-        for tid, tkey in TEMPLATES.items():
-            if template_filter and tkey != template_filter:
-                continue
-            try:
-                for a in sc.search_audits(tid, modified_after, modified_before):
-                    audit_to_tkey[a["audit_id"]] = tkey
-            except Exception:
-                pass
+        templates = {tid: tkey for tid, tkey in TEMPLATES.items() if not template_filter or tkey == template_filter}
+        audit_to_tkey, _ = search_templates(templates, modified_after, modified_before)
 
         details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()))
         results = []
