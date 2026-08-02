@@ -112,10 +112,10 @@ export default function Dashboard() {
 
   // Merge activeSites into the API response; auto-include unmatched sites (no supervisor)
   const { enrichedSites, unmatchedSites } = useMemo(() => {
-    if (!data) return { enrichedSites: [], unmatchedSites: [] as { name: string; reason: string }[] }
-    if (!activeSites) return { enrichedSites: data.sites, unmatchedSites: [] as { name: string; reason: string }[] }
+    if (!data) return { enrichedSites: [], unmatchedSites: [] as { name: string; job_code: string; reason: string }[] }
+    if (!activeSites) return { enrichedSites: data.sites, unmatchedSites: [] as { name: string; job_code: string; reason: string }[] }
     const enrichedSites: Site[] = []
-    const unmatchedSites: { name: string; reason: string }[] = []
+    const unmatchedSites: { name: string; job_code: string; reason: string }[] = []
     for (const site of data.sites) {
       const m = matchActiveSite(site.name, activeSites)
       if (m) {
@@ -125,7 +125,7 @@ export default function Dashboard() {
         const isJobCode = /^[A-Z]{1,4}\d{2,}$/i.test(firstWord)
         const jobCode = isJobCode ? normalizeJob(firstWord) : (site.job_code ?? '')
         enrichedSites.push({ ...site, job_code: jobCode, supervisor: '' })
-        unmatchedSites.push({ name: site.name, reason: getUnmatchReason(site.name) })
+        unmatchedSites.push({ name: site.name, job_code: jobCode, reason: getUnmatchReason(site.name) })
       }
     }
     return { enrichedSites, unmatchedSites }
@@ -218,15 +218,24 @@ export default function Dashboard() {
                 <div className="absolute right-0 top-full mt-1 z-50 bg-surface border border-edge rounded-xl shadow-xl p-3 min-w-[320px]">
                   <p className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">Shown without Excel match</p>
                   <ul className="space-y-2">
-                    {unmatchedSites.map(({ name, reason }) => (
-                      <li key={name}>
-                        <p className="text-sm text-slate-200 font-medium">{name}</p>
-                        <p className="text-xs text-amber-400/70">{reason}</p>
+                    {unmatchedSites.map(({ name, job_code, reason }) => (
+                      <li key={name} className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm text-slate-200 font-medium">{name}</p>
+                          <p className="text-xs text-amber-400/70">{reason}</p>
+                        </div>
+                        <Link
+                          to="/manage-sites"
+                          state={{ name, job_code }}
+                          className="shrink-0 text-xs font-medium text-blue-400 hover:text-blue-300 border border-blue-500/30 hover:border-blue-400/50 px-2 py-1 rounded-md transition-colors"
+                        >
+                          Add
+                        </Link>
                       </li>
                     ))}
                   </ul>
                   <p className="text-[11px] text-slate-600 mt-3 border-t border-edge pt-2">
-                    These sites are visible but supervisor info is unavailable. Add them to the Excel to include supervisor.
+                    These sites are visible but supervisor info is unavailable. Click "Add" to add them, or manage sites directly on the Manage Sites page.
                   </p>
                 </div>
               )}

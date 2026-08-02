@@ -3,6 +3,7 @@ import Layout from './components/Layout'
 import GenerateModal from './components/GenerateModal'
 import Dashboard from './pages/Dashboard'
 import Sites from './pages/Sites'
+import ManageSites from './pages/ManageSites'
 import InspectionDetail from './pages/InspectionDetail'
 
 export default function App() {
@@ -13,6 +14,7 @@ export default function App() {
         <Route element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="sites" element={<Sites />} />
+          <Route path="manage-sites" element={<ManageSites />} />
           <Route path="inspections/:auditId" element={<InspectionDetail />} />
         </Route>
       </Routes>

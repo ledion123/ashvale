@@ -1,5 +1,5 @@
 import { Outlet, NavLink } from 'react-router-dom'
-import { LayoutDashboard, MapPin } from 'lucide-react'
+import { LayoutDashboard, MapPin, UserPlus } from 'lucide-react'
 
 export default function Layout() {
   return (
@@ -36,6 +36,17 @@ export default function Layout() {
             >
               <MapPin size={14} />
               Sites
+            </NavLink>
+            <NavLink
+              to="/manage-sites"
+              className={({ isActive }) =>
+                `flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                  isActive ? 'bg-white/10 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+                }`
+              }
+            >
+              <UserPlus size={14} />
+              Manage Sites
             </NavLink>
           </nav>
 
