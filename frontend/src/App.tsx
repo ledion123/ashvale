@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard'
 import Sites from './pages/Sites'
 import ManageSites from './pages/ManageSites'
 import InspectionDetail from './pages/InspectionDetail'
+import Help from './pages/Help'
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
           <Route path="sites" element={<Sites />} />
           <Route path="manage-sites" element={<ManageSites />} />
           <Route path="inspections/:auditId" element={<InspectionDetail />} />
+          <Route path="help" element={<Help />} />
         </Route>
       </Routes>
     </BrowserRouter>

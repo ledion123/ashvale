@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { X, Upload, FileSpreadsheet, FileText, RotateCcw } from 'lucide-react'
 import { getLastRegisterPdf } from '../lib/sessionFiles'
+import { fetchWithTimeout } from '../lib/api'
 import ErrorBanner from './ErrorBanner'
 
 function getWeekDates() {
@@ -91,7 +92,7 @@ export default function GenerateModal() {
       form.append('siteFile', excelFile)
       if (pdfFile) form.append('pdfFile', pdfFile)
 
-      const res = await fetch('/generate', { method: 'POST', body: form })
+      const res = await fetchWithTimeout('/generate', { method: 'POST', body: form })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
         throw new Error((body as { error?: string }).error ?? `Server error ${res.status}`)

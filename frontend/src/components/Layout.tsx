@@ -1,5 +1,6 @@
 import { Outlet, NavLink } from 'react-router-dom'
-import { LayoutDashboard, MapPin, UserPlus } from 'lucide-react'
+import { LayoutDashboard, MapPin, UserPlus, HelpCircle } from 'lucide-react'
+import ErrorBoundary from './ErrorBoundary'
 
 export default function Layout() {
   return (
@@ -48,6 +49,17 @@ export default function Layout() {
               <UserPlus size={14} />
               Manage Sites
             </NavLink>
+            <NavLink
+              to="/help"
+              className={({ isActive }) =>
+                `flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                  isActive ? 'bg-white/10 text-white' : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
+                }`
+              }
+            >
+              <HelpCircle size={14} />
+              Help
+            </NavLink>
           </nav>
 
           <div className="ml-auto">
@@ -63,7 +75,9 @@ export default function Layout() {
       </header>
 
       <main className="max-w-[1440px] mx-auto px-5 py-6">
-        <Outlet />
+        <ErrorBoundary>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   )
