@@ -5,15 +5,15 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-base">
       <header className="sticky top-0 z-20 border-b border-edge bg-overlay/95 backdrop-blur">
-        <div className="max-w-[1440px] mx-auto px-5 h-13 flex items-center gap-6" style={{ height: 52 }}>
+        <div className="max-w-[1440px] mx-auto px-5 py-2 flex flex-wrap items-center gap-x-6 gap-y-2 min-h-[52px]">
           <div className="flex items-center gap-2.5 mr-2">
-            <div className="w-6 h-6 rounded bg-blue-600 flex items-center justify-center">
+            <div className="w-6 h-6 rounded bg-blue-600 flex items-center justify-center shrink-0">
               <span className="text-white text-[10px] font-bold">A</span>
             </div>
-            <span className="text-white font-semibold text-sm tracking-wide">Ashvale</span>
+            <span className="hidden sm:inline text-white font-semibold text-sm tracking-wide">Ashvale</span>
           </div>
 
-          <nav className="flex items-center gap-0.5">
+          <nav className="flex items-center gap-0.5 flex-wrap">
             <NavLink
               to="/"
               end
@@ -51,16 +51,13 @@ export default function Layout() {
           </nav>
 
           <div className="ml-auto">
-            <a
-              href="#generate"
-              onClick={e => {
-                e.preventDefault()
-                document.dispatchEvent(new CustomEvent('open-generate-modal'))
-              }}
+            <button
+              type="button"
+              onClick={() => document.dispatchEvent(new CustomEvent('open-generate-modal'))}
               className="text-xs font-medium text-slate-400 hover:text-white border border-edge hover:border-edge-hover px-3 py-1.5 rounded-md transition-colors"
             >
               Generate Excel Report
-            </a>
+            </button>
           </div>
         </div>
       </header>

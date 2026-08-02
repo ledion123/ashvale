@@ -1,22 +1,37 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { RefreshCw, AlertCircle, CheckCircle, XCircle, Clock } from 'lucide-react'
+import { RefreshCw, ChevronLeft, ChevronRight, CheckCircle, XCircle, Clock, X } from 'lucide-react'
 import { fetchDashboard } from '../lib/api'
 import { getWeekRange } from '../lib/dates'
 import Spinner from '../components/Spinner'
+import ErrorBanner from '../components/ErrorBanner'
+import { STATUS_COLORS } from '../lib/statusColors'
 import { COLUMNS, type DashboardData, type Site } from '../types'
+
+function initialWeekOffset(): number {
+  try {
+    const s = localStorage.getItem('ashvale_selected_week')
+    if (!s) return 0
+    const stored = JSON.parse(s) as { from: string }
+    const currentMonday = new Date(getWeekRange(0).from)
+    const storedMonday = new Date(stored.from)
+    const diffDays = Math.round((storedMonday.getTime() - currentMonday.getTime()) / 86400000)
+    return Math.round(diffDays / 7)
+  } catch {
+    return 0
+  }
+}
 
 export default function Sites() {
   const location = useLocation()
   const initialFilter = (location.state as { filter?: string })?.filter ?? ''
 
-  const week = useMemo(() => {
-    try {
-      const s = localStorage.getItem('ashvale_selected_week')
-      if (s) return JSON.parse(s) as { from: string; to: string; label: string }
-    } catch {}
-    return getWeekRange(0)
-  }, [])
+  const [weekOffset, setWeekOffset] = useState(initialWeekOffset)
+  const week = useMemo(() => getWeekRange(weekOffset), [weekOffset])
+
+  useEffect(() => {
+    localStorage.setItem('ashvale_selected_week', JSON.stringify({ from: week.from, to: week.to, label: week.label }))
+  }, [week.from, week.to, week.label])
 
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(false)
@@ -41,7 +56,10 @@ export default function Sites() {
   const sites = useMemo(() => {
     if (!data) return []
     let list = data.sites
-    if (search) list = list.filter(s => s.name.toLowerCase().includes(search.toLowerCase()))
+    if (search) {
+      const q = search.toLowerCase()
+      list = list.filter(s => s.name.toLowerCase().includes(q) || (s.supervisor ?? '').toLowerCase().includes(q))
+    }
     if (sortBy === 'gaps') {
       list = [...list].sort((a, b) => {
         const gA = Object.values(a.templates).filter(t => t.status !== 'ok').length
@@ -59,17 +77,57 @@ export default function Sites() {
       <div className="flex flex-wrap items-center gap-3 justify-between">
         <div>
           <h1 className="text-white font-semibold text-lg">All Sites</h1>
-          <p className="text-slate-500 text-sm">Compliance status for {week.label}</p>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <button
+              onClick={() => setWeekOffset(w => w - 1)}
+              aria-label="Previous week"
+              className="p-0.5 rounded text-slate-500 hover:text-white hover:bg-white/10 transition-colors"
+            >
+              <ChevronLeft size={14} />
+            </button>
+            <p className="text-slate-500 text-sm">Compliance status for {week.label}</p>
+            <button
+              onClick={() => setWeekOffset(w => w + 1)}
+              disabled={weekOffset >= 0}
+              aria-label="Next week"
+              className="p-0.5 rounded text-slate-500 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <ChevronRight size={14} />
+            </button>
+            {!week.isCurrent && (
+              <button
+                onClick={() => setWeekOffset(0)}
+                className="text-xs text-blue-400 hover:text-blue-300 ml-1 transition-colors"
+              >
+                This week
+              </button>
+            )}
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          <input
-            type="text"
-            placeholder="Filter sites…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="bg-surface border border-edge rounded-lg px-3 py-1.5 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 w-44"
-          />
+          <label htmlFor="sites-filter" className="sr-only">Filter sites by name or supervisor</label>
+          <div className="relative">
+            <input
+              id="sites-filter"
+              type="text"
+              placeholder="Filter sites or supervisor…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="bg-surface border border-edge rounded-lg pl-3 pr-7 py-1.5 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 w-52"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                aria-label="Clear filter"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300 transition-colors"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
+          <label htmlFor="sites-sort" className="sr-only">Sort sites</label>
           <select
+            id="sites-sort"
             value={sortBy}
             onChange={e => setSortBy(e.target.value as 'gaps' | 'name')}
             className="bg-surface border border-edge rounded-lg px-3 py-1.5 text-sm text-slate-300 focus:outline-none focus:border-blue-500 [color-scheme:dark]"
@@ -80,6 +138,7 @@ export default function Sites() {
           <button
             onClick={load}
             disabled={loading}
+            aria-label="Refresh"
             className="p-1.5 text-slate-400 hover:text-white hover:bg-white/10 rounded-md transition-colors disabled:opacity-30"
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
@@ -87,12 +146,7 @@ export default function Sites() {
         </div>
       </div>
 
-      {error && (
-        <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-400 rounded-lg px-4 py-3 text-sm">
-          <AlertCircle size={15} />
-          {error}
-        </div>
-      )}
+      <ErrorBanner message={error} onDismiss={() => setError('')} onRetry={load} />
 
       {loading && !data && (
         <div className="bg-surface border border-edge rounded-xl p-12 text-center">
@@ -161,11 +215,23 @@ export function SiteCard({ site, from = 'sites' }: { site: Site; from?: 'dashboa
         />
       </div>
 
-      {/* Per-template dots */}
-      <div className="flex flex-wrap gap-1">
+      {/* Per-template dots — shape (icon), not just color, distinguishes status */}
+      <div className="flex flex-wrap gap-1.5">
         {COLUMNS.map(col => {
           const t = site.templates[col]
           const s = t?.status ?? 'missing'
+          const StatusIcon = s === 'ok' ? CheckCircle : s === 'overdue' ? Clock : XCircle
+          const colors = STATUS_COLORS[s]
+          const badge = (
+            <span
+              className={`relative inline-flex w-5 h-5 rounded text-[9px] font-bold items-center justify-center ${colors.bg} ${colors.text}`}
+            >
+              {col.slice(0, 2)}
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-surface flex items-center justify-center">
+                <StatusIcon size={7} className={colors.text} />
+              </span>
+            </span>
+          )
           return (
             <div key={col}>
               {t?.audit_id && (s === 'ok' || s === 'overdue') ? (
@@ -174,31 +240,13 @@ export function SiteCard({ site, from = 'sites' }: { site: Site; from?: 'dashboa
                   state={{ from }}
                   title={`${col}: ${s}`}
                   aria-label={`${col}: ${s}`}
-                  className="inline-flex items-center justify-center w-11 h-11 -m-3"
+                  className="inline-flex items-center justify-center w-11 h-11 -m-3 hover:opacity-80 transition-opacity"
                 >
-                  <span
-                    className={`inline-flex w-5 h-5 rounded text-[9px] font-bold items-center justify-center transition-opacity hover:opacity-80 ${
-                      s === 'ok'
-                        ? 'bg-green-500/20 text-green-400'
-                        : 'bg-amber-500/20 text-amber-400'
-                    }`}
-                  >
-                    {col.slice(0, 2)}
-                  </span>
+                  {badge}
                 </Link>
               ) : (
-                <span
-                  title={`${col}: ${s}`}
-                  aria-label={`${col}: ${s}`}
-                  className={`inline-flex w-5 h-5 rounded text-[9px] font-bold items-center justify-center ${
-                    s === 'ok'
-                      ? 'bg-green-500/20 text-green-400'
-                      : s === 'overdue'
-                      ? 'bg-amber-500/20 text-amber-400'
-                      : 'bg-red-500/10 text-red-500'
-                  }`}
-                >
-                  {col.slice(0, 2)}
+                <span title={`${col}: ${s}`} aria-label={`${col}: ${s}`}>
+                  {badge}
                 </span>
               )}
             </div>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { X, Upload, FileSpreadsheet, FileText, RotateCcw } from 'lucide-react'
 import { getLastRegisterPdf } from '../lib/sessionFiles'
+import ErrorBanner from './ErrorBanner'
 
 function getWeekDates() {
   const today = new Date()
@@ -23,13 +24,17 @@ export default function GenerateModal() {
   const [success, setSuccess] = useState(false)
   const dialogRef = useRef<HTMLDivElement>(null)
   const closeBtnRef = useRef<HTMLButtonElement>(null)
+  const triggerRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     const { from, to } = getWeekDates()
     setFromDate(from)
     setToDate(to)
 
-    const handler = () => setOpen(true)
+    const handler = () => {
+      triggerRef.current = document.activeElement as HTMLElement | null
+      setOpen(true)
+    }
     document.addEventListener('open-generate-modal', handler)
     return () => document.removeEventListener('open-generate-modal', handler)
   }, [])
@@ -47,6 +52,7 @@ export default function GenerateModal() {
     setError('')
     setSuccess(false)
     setLoading(false)
+    triggerRef.current?.focus()
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -80,8 +86,8 @@ export default function GenerateModal() {
     setError('')
     try {
       const form = new FormData()
-      form.append('fromDate', fromDate)
-      form.append('toDate', toDate)
+      form.append('from_date', fromDate)
+      form.append('to_date', toDate)
       form.append('siteFile', excelFile)
       if (pdfFile) form.append('pdfFile', pdfFile)
 
@@ -177,7 +183,7 @@ export default function GenerateModal() {
             </div>
           </div>
 
-          {error && <p className="text-red-400 text-xs">{error}</p>}
+          <ErrorBanner message={error} onDismiss={() => setError('')} />
           {success && <p className="text-green-400 text-xs">Report downloaded successfully.</p>}
 
           <button

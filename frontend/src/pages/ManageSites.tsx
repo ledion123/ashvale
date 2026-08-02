@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Plus, Pencil, Trash2, ChevronDown, Loader2, Check, X, CheckCircle2 } from 'lucide-react'
+import { Plus, Pencil, Trash2, ChevronDown, Check, X, CheckCircle2 } from 'lucide-react'
 import { getActiveSites, saveActiveSites, parseJobCode, type ActiveSite } from '../lib/sites'
 import { fetchSCSites, type SCSite } from '../lib/api'
+import { useFocusTrap } from '../lib/useFocusTrap'
+import Spinner from '../components/Spinner'
 
 const EMPTY: ActiveSite = { name: '', job_code: '', supervisor: '' }
 
@@ -16,6 +18,8 @@ export default function ManageSites() {
   const [search, setSearch] = useState('')
   const [pendingRemove, setPendingRemove] = useState<number | null>(null)
   const [feedback, setFeedback] = useState('')
+  const [selectedRows, setSelectedRows] = useState<Set<number>>(new Set())
+  const [pendingBulkRemove, setPendingBulkRemove] = useState(false)
 
   const flash = (message: string) => {
     setFeedback(message)
@@ -31,20 +35,18 @@ export default function ManageSites() {
   const [scSearch, setScSearch] = useState('')
   const [scSelected, setScSelected] = useState<Set<string>>(new Set())
   const scRef = useRef<HTMLDivElement>(null)
+  const scPanelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!scOpen) return
-    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setScOpen(false) }
     const onClickOutside = (e: MouseEvent) => {
       if (scRef.current && !scRef.current.contains(e.target as Node)) setScOpen(false)
     }
-    document.addEventListener('keydown', onKeyDown)
     document.addEventListener('mousedown', onClickOutside)
-    return () => {
-      document.removeEventListener('keydown', onKeyDown)
-      document.removeEventListener('mousedown', onClickOutside)
-    }
+    return () => document.removeEventListener('mousedown', onClickOutside)
   }, [scOpen])
+
+  useFocusTrap(scPanelRef, scOpen, () => setScOpen(false))
 
   const openScPicker = () => {
     setScOpen(v => !v)
@@ -132,7 +134,29 @@ export default function ManageSites() {
     persist(sites.filter((_, idx) => idx !== i))
     if (editIndex === i) handleCancelEdit()
     setPendingRemove(null)
-    flash(`Removed ${removed.name}`)
+    setSelectedRows(prev => {
+      const next = new Set(prev)
+      next.delete(i)
+      return next
+    })
+    flash(`Removed ${removed.name} from this list (does not affect SafetyCulture)`)
+  }
+
+  const toggleRowSelected = (i: number) => {
+    setSelectedRows(prev => {
+      const next = new Set(prev)
+      if (next.has(i)) next.delete(i)
+      else next.add(i)
+      return next
+    })
+  }
+
+  const handleBulkRemove = () => {
+    const count = selectedRows.size
+    persist(sites.filter((_, idx) => !selectedRows.has(idx)))
+    setSelectedRows(new Set())
+    setPendingBulkRemove(false)
+    flash(`Removed ${count} site${count === 1 ? '' : 's'} from this list (does not affect SafetyCulture)`)
   }
 
   const q = search.toLowerCase()
@@ -155,11 +179,19 @@ export default function ManageSites() {
               <ChevronDown size={14} className={scOpen ? 'rotate-180 transition-transform' : 'transition-transform'} />
             </button>
             {scOpen && (
-              <div className="absolute right-0 top-full mt-1 z-50 bg-surface border border-edge rounded-xl shadow-xl p-3 w-96">
+              <div
+                ref={scPanelRef}
+                role="dialog"
+                aria-modal="true"
+                aria-label="Add sites from SafetyCulture"
+                className="absolute right-0 top-full mt-1 z-50 bg-surface border border-edge rounded-xl shadow-xl p-3 w-96"
+              >
                 <p className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">
                   Pick sites straight from SafetyCulture — for when the Excel can't find them
                 </p>
+                <label htmlFor="sc-filter" className="sr-only">Filter SafetyCulture sites</label>
                 <input
+                  id="sc-filter"
                   type="text"
                   placeholder="Filter…"
                   value={scSearch}
@@ -168,7 +200,7 @@ export default function ManageSites() {
                 />
                 {scLoading && (
                   <div className="flex items-center gap-2 text-slate-500 text-sm py-4 justify-center">
-                    <Loader2 size={14} className="animate-spin" />
+                    <Spinner className="w-4 h-4" />
                     Loading sites…
                   </div>
                 )}
@@ -209,13 +241,26 @@ export default function ManageSites() {
               </div>
             )}
           </div>
-          <input
-            type="text"
-            placeholder="Filter sites…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="bg-surface border border-edge rounded-lg px-3 py-1.5 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 w-48"
-          />
+          <label htmlFor="manage-sites-filter" className="sr-only">Filter sites</label>
+          <div className="relative">
+            <input
+              id="manage-sites-filter"
+              type="text"
+              placeholder="Filter sites…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="bg-surface border border-edge rounded-lg pl-3 pr-7 py-1.5 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 w-48"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                aria-label="Clear filter"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300 transition-colors"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -278,11 +323,53 @@ export default function ManageSites() {
         </div>
       </form>
 
+      {selectedRows.size > 0 && (
+        <div className="flex items-center justify-between gap-3 bg-surface border border-edge rounded-lg px-4 py-2.5">
+          <span className="text-sm text-slate-300">{selectedRows.size} selected</span>
+          {pendingBulkRemove ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-red-400">Remove {selectedRows.size} from this list?</span>
+              <button onClick={handleBulkRemove} aria-label="Confirm bulk remove" className="text-red-400 hover:text-red-300 transition-colors">
+                <Check size={16} />
+              </button>
+              <button onClick={() => setPendingBulkRemove(false)} aria-label="Cancel bulk remove" className="text-slate-500 hover:text-white transition-colors">
+                <X size={16} />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <button onClick={() => setSelectedRows(new Set())} className="text-xs text-slate-400 hover:text-white transition-colors">
+                Clear selection
+              </button>
+              <button
+                onClick={() => setPendingBulkRemove(true)}
+                className="flex items-center gap-1.5 text-xs font-medium text-red-400 hover:text-red-300 border border-red-500/30 hover:border-red-400/50 px-2.5 py-1 rounded-md transition-colors"
+              >
+                <Trash2 size={12} />
+                Remove selected
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="rounded-xl border border-edge overflow-hidden">
         <div className="overflow-x-auto">
         <table className="w-full text-sm border-collapse">
           <thead>
             <tr className="bg-surface">
+              <th className="px-4 py-3 border-b border-edge w-10">
+                <input
+                  type="checkbox"
+                  aria-label="Select all filtered sites"
+                  checked={filtered.length > 0 && filtered.every(s => selectedRows.has(sites.indexOf(s)))}
+                  onChange={e => {
+                    const indices = filtered.map(s => sites.indexOf(s))
+                    setSelectedRows(e.target.checked ? new Set(indices) : new Set())
+                  }}
+                  className="accent-blue-500"
+                />
+              </th>
               <th className="text-left px-4 py-3 text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge">Site</th>
               <th className="text-left px-4 py-3 text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge w-28">Job code</th>
               <th className="text-left px-4 py-3 text-slate-400 font-semibold text-xs uppercase tracking-wider border-b border-edge w-40">Supervisor</th>
@@ -292,7 +379,7 @@ export default function ManageSites() {
           <tbody>
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-10 text-center text-slate-600 text-sm">
+                <td colSpan={5} className="px-4 py-10 text-center text-slate-600 text-sm">
                   {search ? `No sites matching "${search}"` : 'No sites added yet — use the form above'}
                 </td>
               </tr>
@@ -301,13 +388,22 @@ export default function ManageSites() {
               const realIndex = sites.indexOf(s)
               return (
                 <tr key={`${s.name}-${realIndex}`} className="border-b border-edge/60 hover:bg-white/[0.03] transition-colors">
+                  <td className="px-4 py-2.5">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${s.name}`}
+                      checked={selectedRows.has(realIndex)}
+                      onChange={() => toggleRowSelected(realIndex)}
+                      className="accent-blue-500"
+                    />
+                  </td>
                   <td className="px-4 py-2.5 text-slate-200">{s.name}</td>
                   <td className="px-4 py-2.5 text-slate-400">{s.job_code || <span className="text-slate-700">—</span>}</td>
                   <td className="px-4 py-2.5 text-slate-400">{s.supervisor || <span className="text-slate-700">—</span>}</td>
                   <td className="px-4 py-2.5">
                     {pendingRemove === realIndex ? (
                       <div className="flex items-center gap-2 justify-end">
-                        <span className="text-xs text-red-400">Remove?</span>
+                        <span className="text-xs text-red-400">Remove from list?</span>
                         <button
                           onClick={() => handleRemove(realIndex)}
                           aria-label={`Confirm remove ${s.name}`}
@@ -328,7 +424,12 @@ export default function ManageSites() {
                         <button onClick={() => handleEdit(realIndex)} aria-label={`Edit ${s.name}`} className="text-slate-500 hover:text-white transition-colors">
                           <Pencil size={14} />
                         </button>
-                        <button onClick={() => setPendingRemove(realIndex)} aria-label={`Remove ${s.name}`} className="text-slate-500 hover:text-red-400 transition-colors">
+                        <button
+                          onClick={() => setPendingRemove(realIndex)}
+                          aria-label={`Remove ${s.name}`}
+                          title="Remove from this list — does not affect SafetyCulture"
+                          className="text-slate-500 hover:text-red-400 transition-colors"
+                        >
                           <Trash2 size={14} />
                         </button>
                       </div>
@@ -343,7 +444,7 @@ export default function ManageSites() {
       </div>
 
       <p className="text-xs text-slate-600">
-        {sites.length} site{sites.length === 1 ? '' : 's'} saved locally in this browser. Uploading an Excel on the Dashboard replaces this whole list.
+        {sites.length} site{sites.length === 1 ? '' : 's'} saved locally in this browser. This list is only used to match supervisor/job-code info to SafetyCulture inspections — adding, editing, or removing a site here never changes anything in SafetyCulture itself. Uploading an Excel on the Dashboard replaces this whole list.
       </p>
     </div>
   )

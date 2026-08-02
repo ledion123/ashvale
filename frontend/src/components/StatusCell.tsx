@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import type { TemplateStatus } from '../types'
 import { fmtDate } from '../lib/dates'
+import { STATUS_COLORS } from '../lib/statusColors'
 
 interface Props {
   status: TemplateStatus | undefined
@@ -26,23 +27,19 @@ export default function StatusCell({ status, column, from = 'dashboard' }: Props
     .filter(Boolean)
     .join('\n')
 
-  const dot =
-    s === 'ok' ? (
-      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-green-500/15 text-green-400 text-xs font-bold">
-        ✓
-      </span>
-    ) : s === 'overdue' ? (
-      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-amber-500/15 text-amber-400 text-xs font-bold">
-        ⏱
-      </span>
-    ) : (
-      <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-red-500/10 text-red-500 text-xs font-bold">
-        ✗
-      </span>
-    )
+  const glyph = s === 'ok' ? '✓' : s === 'overdue' ? '⏱' : '✗'
+  const colors = STATUS_COLORS[s]
+  const dot = (
+    <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full ${colors.bg} ${colors.text} text-xs font-bold`}>
+      {glyph}
+    </span>
+  )
 
+  // Shape (letter), not just color, marks "PUWER Register only" so it isn't a color-only cue
   const badge = register_only ? (
-    <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-orange-400 ring-2 ring-slate-900" />
+    <span className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-orange-400 ring-2 ring-slate-900 flex items-center justify-center">
+      <span className="text-[6px] font-bold text-slate-900 leading-none">R</span>
+    </span>
   ) : null
 
   if ((s === 'ok' || s === 'overdue') && audit_id) {

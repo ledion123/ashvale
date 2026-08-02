@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { RefreshCw, ChevronLeft, ChevronRight, AlertCircle, FileUp, Users, X, Info } from 'lucide-react'
+import { RefreshCw, ChevronLeft, ChevronRight, FileUp, Users, X, Info, ClipboardList } from 'lucide-react'
 import StatusTile from '../components/StatusTile'
 import StatusCell from '../components/StatusCell'
 import Spinner from '../components/Spinner'
+import ErrorBanner from '../components/ErrorBanner'
 import { fetchDashboard, syncDashboard, uploadRegister, uploadSites } from '../lib/api'
 import { getWeekRange } from '../lib/dates'
 import { getRegister, saveRegister, clearRegister, computeNotes, type PlantRegister } from '../lib/register'
 import { getActiveSites, saveActiveSites, clearActiveSites, matchActiveSite, getUnmatchReason, normalizeJob, type ActiveSite } from '../lib/sites'
 import { setLastRegisterPdf } from '../lib/sessionFiles'
+import { STATUS_COLORS } from '../lib/statusColors'
+import { useFocusTrap } from '../lib/useFocusTrap'
 import { COLUMNS, ABBREV, type DashboardData, type Site } from '../types'
 import { SiteCard } from './Sites'
 
@@ -32,20 +35,33 @@ export default function Dashboard() {
   const [search, setSearch] = useState('')
   const [showUnmatched, setShowUnmatched] = useState(false)
   const unmatchedRef = useRef<HTMLDivElement>(null)
+  const unmatchedPanelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!showUnmatched) return
-    const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowUnmatched(false) }
     const onClickOutside = (e: MouseEvent) => {
       if (unmatchedRef.current && !unmatchedRef.current.contains(e.target as Node)) setShowUnmatched(false)
     }
-    document.addEventListener('keydown', onKeyDown)
     document.addEventListener('mousedown', onClickOutside)
-    return () => {
-      document.removeEventListener('keydown', onKeyDown)
-      document.removeEventListener('mousedown', onClickOutside)
-    }
+    return () => document.removeEventListener('mousedown', onClickOutside)
   }, [showUnmatched])
+
+  useFocusTrap(unmatchedPanelRef, showUnmatched, () => setShowUnmatched(false))
+
+  const [showRegisterView, setShowRegisterView] = useState(false)
+  const registerViewRef = useRef<HTMLDivElement>(null)
+  const registerViewPanelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!showRegisterView) return
+    const onClickOutside = (e: MouseEvent) => {
+      if (registerViewRef.current && !registerViewRef.current.contains(e.target as Node)) setShowRegisterView(false)
+    }
+    document.addEventListener('mousedown', onClickOutside)
+    return () => document.removeEventListener('mousedown', onClickOutside)
+  }, [showRegisterView])
+
+  useFocusTrap(registerViewPanelRef, showRegisterView, () => setShowRegisterView(false))
 
   // Plant register (PDF) stored in localStorage
   const [register, setRegister] = useState<PlantRegister | null>(getRegister)
@@ -167,7 +183,9 @@ export default function Dashboard() {
 
   const filteredSites = useMemo(() => {
     const q = search.toLowerCase()
-    return q ? enrichedSites.filter(s => s.name.toLowerCase().includes(q)) : enrichedSites
+    return q
+      ? enrichedSites.filter(s => s.name.toLowerCase().includes(q) || (s.supervisor ?? '').toLowerCase().includes(q))
+      : enrichedSites
   }, [enrichedSites, search])
 
   const gapSites = enrichedSites.filter(s =>
@@ -209,13 +227,26 @@ export default function Dashboard() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <input
-            type="text"
-            placeholder="Filter sites…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="bg-surface border border-edge rounded-lg px-3 py-1.5 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 w-40"
-          />
+          <label htmlFor="dashboard-filter" className="sr-only">Filter sites by name or supervisor</label>
+          <div className="relative">
+            <input
+              id="dashboard-filter"
+              type="text"
+              placeholder="Filter sites or supervisor…"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="bg-surface border border-edge rounded-lg pl-3 pr-7 py-1.5 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-blue-500 w-44"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch('')}
+                aria-label="Clear filter"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-300 transition-colors"
+              >
+                <X size={13} />
+              </button>
+            )}
+          </div>
 
           {/* Upload Sites Excel */}
           <div className="flex items-center">
@@ -256,16 +287,62 @@ export default function Dashboard() {
               <input ref={registerRef} type="file" accept=".pdf" className="hidden" onChange={handleRegisterUpload} disabled={registerUploading} />
             </label>
             {register && !registerUploading && (
-              <button
-                onClick={handleClearRegister}
-                aria-label="Clear uploaded plant register"
-                title="Clear uploaded plant register"
-                className="px-2 py-1.5 rounded-r-lg border border-l-0 border-violet-500/30 text-violet-400 hover:bg-violet-600/30 transition-colors"
-              >
-                <X size={13} />
-              </button>
+              <>
+                <button
+                  onClick={() => setShowRegisterView(true)}
+                  aria-label="View parsed plant register"
+                  title="View what was parsed from the register PDF"
+                  className="px-2 py-1.5 border-y border-violet-500/30 text-violet-400 hover:bg-violet-600/30 transition-colors"
+                >
+                  <ClipboardList size={13} />
+                </button>
+                <button
+                  onClick={handleClearRegister}
+                  aria-label="Clear uploaded plant register"
+                  title="Clear uploaded plant register"
+                  className="px-2 py-1.5 rounded-r-lg border border-l-0 border-violet-500/30 text-violet-400 hover:bg-violet-600/30 transition-colors"
+                >
+                  <X size={13} />
+                </button>
+              </>
             )}
           </div>
+          {showRegisterView && register && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4" ref={registerViewRef}>
+              <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowRegisterView(false)} />
+              <div
+                ref={registerViewPanelRef}
+                role="dialog"
+                aria-modal="true"
+                aria-label="Parsed plant register contents"
+                className="relative bg-surface border border-edge rounded-2xl w-full max-w-lg shadow-2xl max-h-[80vh] flex flex-col"
+              >
+                <div className="flex items-center justify-between px-5 py-4 border-b border-edge">
+                  <h2 className="text-white font-semibold text-sm">Parsed Plant Register</h2>
+                  <button onClick={() => setShowRegisterView(false)} aria-label="Close" className="text-slate-500 hover:text-white transition-colors">
+                    <X size={16} />
+                  </button>
+                </div>
+                <div className="px-5 py-4 overflow-y-auto space-y-4">
+                  {Object.keys(register).length === 0 && (
+                    <p className="text-slate-600 text-sm">No machines were parsed from the uploaded PDF.</p>
+                  )}
+                  {Object.entries(register).map(([job, types]) => (
+                    <div key={job}>
+                      <p className="text-xs font-semibold text-slate-300 uppercase tracking-wider">{job}</p>
+                      <div className="mt-1 space-y-0.5">
+                        {Object.entries(types).map(([mtype, serials]) => (
+                          <p key={mtype} className="text-xs text-slate-500 pl-2">
+                            <span className="text-slate-400">{mtype}:</span> {serials.length > 0 ? serials.join(', ') : '—'}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
 
           {unmatchedSites.length > 0 && (
             <div className="relative" ref={unmatchedRef}>
@@ -277,7 +354,13 @@ export default function Dashboard() {
                 ⚠ {unmatchedSites.length} without Excel match
               </button>
               {showUnmatched && (
-                <div className="absolute right-0 top-full mt-1 z-50 bg-surface border border-edge rounded-xl shadow-xl p-3 min-w-[320px]">
+                <div
+                  ref={unmatchedPanelRef}
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label="Sites without Excel match"
+                  className="absolute right-0 top-full mt-1 z-50 bg-surface border border-edge rounded-xl shadow-xl p-3 min-w-[320px]"
+                >
                   <p className="text-[11px] text-slate-500 mb-2 font-medium uppercase tracking-wider">Shown without Excel match</p>
                   <ul className="space-y-2">
                     {unmatchedSites.map(({ name, job_code, reason }) => (
@@ -307,6 +390,7 @@ export default function Dashboard() {
           <button
             onClick={handleSync}
             disabled={loading || syncing}
+            title="Force a fresh fetch from SafetyCulture, bypassing the 1-hour cache (the page already auto-loads on open/week change)"
             className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
           >
             <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
@@ -323,8 +407,8 @@ export default function Dashboard() {
       </div>
 
       {/* Errors — scoped per action so a stale one can't be misattributed, each dismissable */}
-      <ErrorBanner message={loadError} onDismiss={() => setLoadError('')} />
-      <ErrorBanner message={syncError} onDismiss={() => setSyncError('')} />
+      <ErrorBanner message={loadError} onDismiss={() => setLoadError('')} onRetry={() => load(week.from, week.to)} />
+      <ErrorBanner message={syncError} onDismiss={() => setSyncError('')} onRetry={handleSync} />
       <ErrorBanner message={registerError} onDismiss={() => setRegisterError('')} />
       <ErrorBanner message={sitesError} onDismiss={() => setSitesError('')} />
 
@@ -480,12 +564,8 @@ function SiteRow({
       <td className="px-4 py-2.5">
         <span
           className={`inline-block text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-            allOk
-              ? 'bg-green-500/10 text-green-400'
-              : hasRed
-              ? 'bg-red-500/10 text-red-400'
-              : 'bg-amber-500/10 text-amber-400'
-          }`}
+            STATUS_COLORS[allOk ? 'ok' : hasRed ? 'missing' : 'overdue'].bg
+          } ${STATUS_COLORS[allOk ? 'ok' : hasRed ? 'missing' : 'overdue'].text}`}
         >
           {allOk ? 'OK' : hasRed ? 'GAPS' : 'OVERDUE'}
         </span>
@@ -502,18 +582,6 @@ function SiteRow({
   )
 }
 
-function ErrorBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
-  if (!message) return null
-  return (
-    <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 text-red-400 rounded-lg px-4 py-3 text-sm">
-      <AlertCircle size={15} className="shrink-0" />
-      <span className="flex-1">{message}</span>
-      <button onClick={onDismiss} aria-label="Dismiss" className="text-red-400/70 hover:text-red-300 transition-colors shrink-0">
-        <X size={15} />
-      </button>
-    </div>
-  )
-}
 
 function LegendItem({ icon, color, label }: { icon: string; color: string; label: string }) {
   return (

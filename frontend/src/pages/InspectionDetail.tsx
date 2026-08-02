@@ -106,6 +106,23 @@ export default function InspectionDetail() {
         </div>
       </div>
 
+      {/* Header details (e.g. conducted-at fields SafetyCulture attaches to the audit header) */}
+      {data.header_items.some(hasHeaderValue) && (
+        <div className="bg-surface border border-edge rounded-xl overflow-hidden">
+          <div className="px-4 py-3 border-b border-edge bg-overlay">
+            <h2 className="text-slate-300 font-semibold text-sm">Details</h2>
+          </div>
+          <div className="divide-y divide-edge/50">
+            {data.header_items.filter(hasHeaderValue).map((item, ii) => (
+              <div key={item.item_id ?? ii} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                <p className="text-slate-400 text-xs">{item.label}</p>
+                <p className="text-slate-200 text-sm text-right">{headerItemValue(item)}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Inspection items */}
       {sections.map((section, si) => (
         <div key={si} className="bg-surface border border-edge rounded-xl overflow-hidden">
@@ -138,6 +155,15 @@ function BackLink() {
       {label}
     </Link>
   )
+}
+
+function headerItemValue(item: AuditDetail['header_items'][number]): string {
+  const r = item.responses
+  return r?.text || (r?.datetime ? fmtDateTime(r.datetime) : '') || r?.selected?.[0]?.label || ''
+}
+
+function hasHeaderValue(item: AuditDetail['header_items'][number]): boolean {
+  return Boolean(item.label && headerItemValue(item))
 }
 
 function MetaItem({ label, value }: { label: string; value: string }) {

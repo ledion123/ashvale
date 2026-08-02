@@ -18,9 +18,12 @@ load_dotenv()
 import sc_client as sc
 
 app = Flask(__name__, static_folder="static", static_url_path="/static")
+app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024  # 20MB — plenty for a weekly Excel/PDF upload
 
 APP_USER = os.environ.get("APP_USER")
 APP_PASS = os.environ.get("APP_PASS")
+if not APP_USER or not APP_PASS:
+    app.logger.warning("APP_USER/APP_PASS not set - Basic Auth is DISABLED, app is open to anyone")
 
 
 @app.before_request
@@ -127,6 +130,10 @@ def current_week_range():
 def to_iso(date_str, end=False):
     t = "T23:59:59Z" if end else "T00:00:00Z"
     return f"{date_str}{t}"
+
+def has_file(f):
+    """True only if a file was actually selected, not just an empty form field."""
+    return bool(f and f.filename)
 
 def valid_date_format(*dates):
     try:
@@ -701,12 +708,22 @@ def parse_weekly_excel(excel_bytes):
 
 # ── API Routes ────────────────────────────────────────────
 
+@app.route("/api/health")
+def api_health():
+    """Liveness + config check — catches a missing SAFETYCULTURE_API_TOKEN
+    (the exact cause of the earlier Vercel outage) without a live API call."""
+    token_present = bool(os.environ.get("SAFETYCULTURE_API_TOKEN"))
+    body = {"status": "ok" if token_present else "degraded", "safetyculture_token_configured": token_present}
+    return jsonify(body), (200 if token_present else 503)
+
+
 @app.route("/api/sites")
 def api_sites():
     try:
         data = sc.get_sites()
         return jsonify(data)
     except Exception as e:
+        app.logger.exception("api_sites failed")
         return jsonify({"error": str(e)}), 500
 
 
@@ -721,11 +738,21 @@ def api_dashboard():
     try:
         return jsonify(build_dashboard_data(from_date, to_date))
     except Exception as e:
+        app.logger.exception("api_dashboard failed")
         return jsonify({"error": str(e)}), 500
 
 
+_last_sync_at = 0.0
+_SYNC_MIN_INTERVAL = 10  # seconds — bypasses the cache and fans out to 9 templates, don't let it be hammered
+
 @app.route("/api/sync", methods=["POST"])
 def api_sync():
+    global _last_sync_at
+    now = datetime.now(timezone.utc).timestamp()
+    if now - _last_sync_at < _SYNC_MIN_INTERVAL:
+        return jsonify({"error": f"Please wait a few seconds between syncs (max 1 per {_SYNC_MIN_INTERVAL}s)"}), 429
+    _last_sync_at = now
+
     data = request.get_json(silent=True) or {}
     from_date = data.get("from")
     to_date   = data.get("to")
@@ -736,6 +763,7 @@ def api_sync():
     try:
         return jsonify(build_dashboard_data(from_date, to_date, force_refresh=True))
     except Exception as e:
+        app.logger.exception("api_sync failed")
         return jsonify({"error": str(e)}), 500
 
 
@@ -743,7 +771,7 @@ def api_sync():
 def validate_weekly():
     """Cross-check an uploaded weekly Excel (sites marked 'N' = required) against SafetyCulture completions."""
     excel_file = request.files.get("excel")
-    if not excel_file:
+    if not has_file(excel_file):
         return jsonify({"error": "No Excel file uploaded"}), 400
 
     from_date = request.form.get("from_date")
@@ -789,14 +817,17 @@ def validate_weekly():
                 "notes": f"Missing: {', '.join(missing)}" if missing else "All inspections completed",
             })
 
+        compliant = sum(1 for s in results if not s["missing_inspections"])
         return jsonify({
             "week_start": from_date,
             "week_end": to_date,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "total_sites": len(results),
             "sites": results,
+            "summary": {"total": len(results), "compliant": compliant, "has_gaps": len(results) - compliant},
         })
     except Exception as e:
+        app.logger.exception("validate_weekly failed")
         return jsonify({"error": str(e)}), 500
 
 
@@ -804,7 +835,7 @@ def validate_weekly():
 def loler_check():
     """Cross-check completed LOLER audits against the plant register PDF, item by item."""
     pdf_file = request.files.get("pdf")
-    if not pdf_file:
+    if not has_file(pdf_file):
         return jsonify({"error": "No PDF uploaded"}), 400
 
     from_date = request.form.get("from_date")
@@ -816,8 +847,14 @@ def loler_check():
 
     try:
         sites = check_loler_coverage(from_date, to_date, pdf_file.read())
-        return jsonify({"week_start": from_date, "week_end": to_date, "sites": sites})
+        return jsonify({
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "week_start": from_date,
+            "week_end": to_date,
+            "sites": sites,
+        })
     except Exception as e:
+        app.logger.exception("loler_check failed")
         return jsonify({"error": str(e)}), 500
 
 
@@ -859,6 +896,7 @@ def api_inspections():
         results.sort(key=lambda x: x["date_completed"] or "", reverse=True)
         return jsonify({"inspections": results})
     except Exception as e:
+        app.logger.exception("api_inspections failed")
         return jsonify({"error": str(e)}), 500
 
 
@@ -867,7 +905,15 @@ def api_inspection_detail(audit_id):
     try:
         detail = sc.get_audit(audit_id)
         return jsonify(detail)
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 502
+        if status == 404:
+            return jsonify({"error": "Inspection not found"}), 404
+        if 400 <= status < 500:
+            return jsonify({"error": str(e)}), status
+        return jsonify({"error": str(e)}), 502
     except Exception as e:
+        app.logger.exception("api_inspection_detail failed for %s", audit_id)
         return jsonify({"error": str(e)}), 500
 
 
@@ -876,7 +922,7 @@ def api_inspection_detail(audit_id):
 @app.route("/api/parse-register", methods=["POST"])
 def api_parse_register():
     f = request.files.get("pdf")
-    if not f:
+    if not has_file(f):
         return jsonify({"error": "No PDF uploaded"}), 400
     try:
         site_machines, name_to_job = parse_pdf(f.read())
@@ -886,13 +932,14 @@ def api_parse_register():
         }
         return jsonify({"register": register, "name_to_job": name_to_job})
     except Exception as e:
+        app.logger.exception("api_parse_register failed")
         return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/parse-sites", methods=["POST"])
 def api_parse_sites():
     f = request.files.get("excel")
-    if not f:
+    if not has_file(f):
         return jsonify({"error": "No Excel uploaded"}), 400
     try:
         wb = openpyxl.load_workbook(io.BytesIO(f.read()))
@@ -930,6 +977,7 @@ def api_parse_sites():
 
         return jsonify({"sites": sites})
     except Exception as e:
+        app.logger.exception("api_parse_sites failed")
         return jsonify({"error": str(e)}), 500
 
 
@@ -937,25 +985,28 @@ def api_parse_sites():
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    from_date  = request.form.get("fromDate")
-    to_date    = request.form.get("toDate")
+    from_date  = request.form.get("from_date")
+    to_date    = request.form.get("to_date")
     excel_file = request.files.get("siteFile")
     pdf_file   = request.files.get("pdfFile")
 
     if not from_date or not to_date:
         return jsonify({"error": "Missing dates"}), 400
-    if not excel_file or not excel_file.filename:
+    if not valid_date_format(from_date, to_date):
+        return jsonify({"error": "Dates must be in YYYY-MM-DD format"}), 400
+    if not has_file(excel_file):
         return jsonify({"error": "Please upload your weekly Excel template"}), 400
 
     try:
         excel_bytes = excel_file.read()
-        pdf_bytes   = pdf_file.read() if pdf_file and pdf_file.filename else None
+        pdf_bytes   = pdf_file.read() if has_file(pdf_file) else None
 
         out = generate_report(from_date, to_date, excel_bytes, pdf_bytes)
         filename = f"Ashvale_Summary_{from_date}_to_{to_date}.xlsx"
         return send_file(out, as_attachment=True, download_name=filename,
                          mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     except Exception as e:
+        app.logger.exception("generate failed")
         return jsonify({"error": str(e)}), 500
 
 
