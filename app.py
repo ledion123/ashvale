@@ -56,6 +56,9 @@ TEMPLATES = {
 # PUWER_REGISTER completion marks all five machine-type columns
 PUWER_COLUMNS = ("PUWER", "EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND")
 
+# Columns that have their own individual inspection template, separate from PUWER_REGISTER
+INDIVIDUAL_COVERABLE = {"EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND"}
+
 DISPLAY_COLUMNS = ["EXCAVATOR", "LOLER", "DUMPER", "ROLLER", "TELEHAND", "PUWER", "SITE SUP", "HAVS", "TOOLBOX"]
 
 # 0-based column indexes in Sheet2
@@ -120,6 +123,40 @@ def extract_serials(text):
             part = part.strip().rstrip('(').strip()
             if part and any(c.isdigit() for c in part):
                 serials.add(prefix + part.upper())
+    return serials
+
+# PUWER Register lists serials in each item's own response text, often as bare
+# numbers with no prefix (e.g. "802\n61\n43" under the Excavator item) since the
+# item's own label already implies the machine type.
+PUWER_IMPLIED_PREFIX = {
+    "EXCAVATOR": "ASH",
+    "DUMPER": "ASH",
+    "ROLLER": "ROR",
+    "TELEHAND": "TL",
+}
+
+def extract_puwer_item_serials(mtype, item_text):
+    """
+    Parse the serials an inspector typed into a PUWER Register item's response text.
+    Explicitly-prefixed tokens (e.g. "ROR 17", "Ash 205") are parsed via the existing
+    extract_serials(). Bare numeric tokens (e.g. "802", "61") fall back to the item's
+    implied prefix from its own category (Excavator/Dumper -> ASH, Roller -> ROR,
+    Telehandler -> TL) — but only when the WHOLE token is numeric, so free-text noise
+    like "Hire" or "Na" is safely skipped rather than guessed at.
+    """
+    implied_prefix = PUWER_IMPLIED_PREFIX.get(mtype)
+    if not implied_prefix or not item_text:
+        return set()
+    serials = set()
+    for token in re.split(r'[,/\n]', item_text):
+        token = token.strip()
+        if not token:
+            continue
+        explicit = extract_serials(token)
+        if explicit:
+            serials.update(explicit)
+        elif token.isdigit():
+            serials.add(implied_prefix + token)
     return serials
 
 def extract_machine_id(audit_name):
@@ -343,6 +380,12 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
                 all_text += " " + (responses.get("text") or "")
                 all_text += " " + (item.get("note") or "")
             found_serials = extract_serials(all_text)
+            # Item text/notes are often left blank; the audit title reliably has the
+            # machine serial for individual EXCAVATOR/DUMPER/ROLLER/TELEHAND audits.
+            if tkey in INDIVIDUAL_COVERABLE:
+                machine_id = extract_machine_id(ad.get("name", ""))
+                if machine_id:
+                    found_serials.add(machine_id)
 
             if pdf_bytes:
                 norm_job   = row_to_normjob.get(row_num, "")
@@ -560,8 +603,6 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
     details = sc.fetch_audits_parallel(list(audit_to_tkey.keys()), max_workers=50)
 
     SERIAL_CHECK_TKEYS = {"LOLER", "EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND", "PUWER_REGISTER"}
-    # Columns that have their own individual inspection template, separate from PUWER_REGISTER
-    INDIVIDUAL_COVERABLE = {"EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND"}
 
     # group_key -> col_key -> {status, last_completed, audit_id, inspector}
     # group_key is normalised job code when available (e.g. "AC23"), else full site name
@@ -574,6 +615,8 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
     # group_key -> col_key -> set of distinct machine ids (serial from title, or audit_id
     # fallback) inspected this week via the individual template — not just "was one done"
     machines_checked = {}
+    # group_key -> col_key -> set of serials PUWER Register's own item text listed
+    puwer_serials = {}
 
     for audit_id, detail in details.items():
         tkey = audit_to_tkey[audit_id]
@@ -623,6 +666,10 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                 answer = selected[0].get("label", "").strip().upper() if selected else ""
                 if answer and answer != "N/A":
                     present.add(mtype)
+                item_text = item.get("responses", {}).get("text") or ""
+                item_serials = extract_puwer_item_serials(mtype, item_text)
+                if item_serials:
+                    puwer_serials.setdefault(gkey, {}).setdefault(mtype, set()).update(item_serials)
             puwer_register_present.setdefault(gkey, set()).update(present)
 
         # Extract serial numbers from all item text/notes for machine-type inspections
@@ -648,6 +695,23 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
         templates_status = {}
         for col_key in DISPLAY_COLUMNS:
             info = cols.get(col_key)
+
+            # Cross-check PUWER Register's own listed serials against what the
+            # individual audits found this week — catches contradictions either way
+            # (PUWER lists a machine no individual audit confirms, or vice versa).
+            puwer_cross_check = None
+            if col_key in INDIVIDUAL_COVERABLE:
+                puwer_set = puwer_serials.get(gkey, {}).get(col_key, set())
+                individual_set = machines_checked.get(gkey, {}).get(col_key, set())
+                if puwer_set or individual_set:
+                    in_puwer_not_individual = sorted(puwer_set - individual_set)
+                    in_individual_not_puwer = sorted(individual_set - puwer_set)
+                    if in_puwer_not_individual or in_individual_not_puwer:
+                        puwer_cross_check = {
+                            "in_puwer_not_individual": in_puwer_not_individual,
+                            "in_individual_not_puwer": in_individual_not_puwer,
+                        }
+
             if info and info["last_completed"]:
                 try:
                     dc = datetime.fromisoformat(info["last_completed"].replace("Z", "+00:00")).date()
@@ -666,14 +730,20 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     and col_key in puwer_register_present.get(gkey, set())
                     and col_key not in direct_audit_cols.get(gkey, set())
                 )
+                # Title-parsed machine serials are far more reliable than item-text/notes
+                # (which are often left blank) for the individual machine-type templates,
+                # so merge them into found_serials — the same field the plant-register
+                # Notes-column gap check (computeNotes, frontend) already compares.
+                found = site_serials.get(gkey, {}).get(col_key, set()) | machines_checked.get(gkey, {}).get(col_key, set())
                 templates_status[col_key] = {
                     "status": status,
                     "last_completed": info["last_completed"],
                     "audit_id": info["audit_id"],
                     "inspector": info["inspector"],
-                    "found_serials": sorted(site_serials.get(gkey, {}).get(col_key, set())),
+                    "found_serials": sorted(found),
                     "register_only": register_only,
                     "machines_checked": sorted(machines_checked.get(gkey, {}).get(col_key, set())),
+                    "puwer_cross_check": puwer_cross_check,
                 }
             else:
                 templates_status[col_key] = {
@@ -684,6 +754,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "found_serials": [],
                     "register_only": False,
                     "machines_checked": sorted(machines_checked.get(gkey, {}).get(col_key, set())),
+                    "puwer_cross_check": puwer_cross_check,
                 }
         sites_list.append({"name": site_name, "job_code": job_code, "templates": templates_status})
 
