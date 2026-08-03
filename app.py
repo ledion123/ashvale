@@ -713,25 +713,11 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
         if gkey not in site_data:
             site_data[gkey] = {"_display_name": display, "_job_code": job}
 
-        for col_key in col_keys:
-            existing = site_data[gkey].get(col_key)
-            # Keep only the most recent inspection per site/column
-            if not existing or (date_completed and date_completed > existing["last_completed"]):
-                site_data[gkey][col_key] = {
-                    "last_completed": date_completed,
-                    "audit_id": audit_id,
-                    "inspector": inspector,
-                }
-
-        if tkey != "PUWER_REGISTER" and tkey in INDIVIDUAL_COVERABLE:
-            direct_audit_cols.setdefault(gkey, set()).add(tkey)
-            machine_id = extract_machine_id(ad.get("name", "")) or audit_id
-            machines_checked.setdefault(gkey, {}).setdefault(tkey, set()).add(machine_id)
-            individual_audits.setdefault(gkey, {}).setdefault(tkey, []).append({
-                "audit_id": audit_id, "machine_id": machine_id,
-                "date_completed": date_completed, "inspector": inspector,
-            })
-
+        # PUWER Register answers each machine-type item "N/A" when the site has none
+        # of that equipment — figure that out *before* deciding coverage below, so an
+        # N/A category doesn't get marked "done" (that's what caused a site with no
+        # telehandler to still show a green tick sourced from a register saying so).
+        na_categories = set()
         if tkey == "PUWER_REGISTER":
             present = set()
             for item in detail.get("items", []):
@@ -741,7 +727,9 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     continue
                 selected = item.get("responses", {}).get("selected", [])
                 answer = selected[0].get("label", "").strip().upper() if selected else ""
-                if answer and answer != "N/A":
+                if answer == "N/A":
+                    na_categories.add(mtype)
+                elif answer:
                     present.add(mtype)
                 item_text = item.get("responses", {}).get("text") or ""
                 item_serials = extract_puwer_item_serials(mtype, item_text)
@@ -753,6 +741,28 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     # category as if PUWER Register had nothing to say about it.
                     puwer_photo_only.setdefault(gkey, set()).add(mtype)
             puwer_register_present.setdefault(gkey, set()).update(present)
+
+        for col_key in col_keys:
+            existing = site_data[gkey].get(col_key)
+            # Keep only the most recent inspection per site/column — an N/A verdict
+            # is a real answer like any other, so the same freshest-wins rule decides
+            # whether it or an older/newer non-N/A entry is the one that's shown.
+            if not existing or (date_completed and date_completed > existing["last_completed"]):
+                site_data[gkey][col_key] = {
+                    "last_completed": date_completed,
+                    "audit_id": audit_id,
+                    "inspector": inspector,
+                    "na": col_key in na_categories,
+                }
+
+        if tkey != "PUWER_REGISTER" and tkey in INDIVIDUAL_COVERABLE:
+            direct_audit_cols.setdefault(gkey, set()).add(tkey)
+            machine_id = extract_machine_id(ad.get("name", "")) or audit_id
+            machines_checked.setdefault(gkey, {}).setdefault(tkey, set()).add(machine_id)
+            individual_audits.setdefault(gkey, {}).setdefault(tkey, []).append({
+                "audit_id": audit_id, "machine_id": machine_id,
+                "date_completed": date_completed, "inspector": inspector,
+            })
 
         # LOLER lists serials per-item, often as bare numbers implied by the item's
         # own question (chain/shackle/fork/etc.) — same treatment as PUWER Register.
@@ -813,17 +823,22 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                         }
 
             if info and info["last_completed"]:
-                try:
-                    dc = datetime.fromisoformat(info["last_completed"].replace("Z", "+00:00")).date()
-                except Exception:
-                    dc = None
-
-                if dc and dc >= week_start:
-                    status = "ok"
-                elif dc:
-                    status = "overdue"
+                if info.get("na"):
+                    # PUWER Register confirms this site has none of this equipment —
+                    # doesn't go stale the way a missed weekly inspection does.
+                    status = "n/a"
                 else:
-                    status = "missing"
+                    try:
+                        dc = datetime.fromisoformat(info["last_completed"].replace("Z", "+00:00")).date()
+                    except Exception:
+                        dc = None
+
+                    if dc and dc >= week_start:
+                        status = "ok"
+                    elif dc:
+                        status = "overdue"
+                    else:
+                        status = "missing"
 
                 register_only = (
                     col_key in INDIVIDUAL_COVERABLE
@@ -871,7 +886,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
         sites_list.append({"name": site_name, "job_code": job_code, "templates": templates_status})
 
     total     = len(sites_list)
-    compliant = sum(1 for s in sites_list if all(t["status"] == "ok" for t in s["templates"].values()))
+    compliant = sum(1 for s in sites_list if all(t["status"] in ("ok", "n/a") for t in s["templates"].values()))
 
     result = {
         "generated_at": datetime.now(timezone.utc).isoformat(),

@@ -4,7 +4,7 @@ export const ABBREV: Record<string, string> = {
   TELEHAND: 'TLH', PUWER: 'PUW', 'SITE SUP': 'SUP', HAVS: 'HVS', TOOLBOX: 'TBX',
 }
 
-export type InspectionStatus = 'ok' | 'overdue' | 'missing'
+export type InspectionStatus = 'ok' | 'overdue' | 'missing' | 'n/a'
 
 export interface TemplateStatus {
   status: InspectionStatus

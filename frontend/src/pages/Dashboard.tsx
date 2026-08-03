@@ -608,7 +608,7 @@ function SiteRow({
   register: PlantRegister | null
   showNotes: boolean
 }) {
-  const allOk  = Object.values(site.templates).every(t => t.status === 'ok')
+  const allOk  = Object.values(site.templates).every(t => t.status === 'ok' || t.status === 'n/a')
   const hasRed = Object.values(site.templates).some(t => t.status === 'missing')
   const notes  = register ? computeNotes(site, register) : []
 

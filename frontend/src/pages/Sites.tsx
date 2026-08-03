@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { RefreshCw, ChevronLeft, ChevronRight, CheckCircle, XCircle, Clock, X } from 'lucide-react'
+import { RefreshCw, ChevronLeft, ChevronRight, CheckCircle, XCircle, Clock, MinusCircle, X } from 'lucide-react'
 import { fetchDashboard } from '../lib/api'
 import { getWeekRange } from '../lib/dates'
 import Spinner from '../components/Spinner'
@@ -174,10 +174,11 @@ export default function Sites() {
 export function SiteCard({ site, from = 'sites' }: { site: Site; from?: 'dashboard' | 'sites' }) {
   const statuses = Object.values(site.templates)
   const ok = statuses.filter(t => t.status === 'ok').length
+  const na = statuses.filter(t => t.status === 'n/a').length
   const overdue = statuses.filter(t => t.status === 'overdue').length
   const missing = statuses.filter(t => t.status === 'missing').length
   const total = COLUMNS.length
-  const pct = Math.round((ok / total) * 100)
+  const pct = Math.round(((ok + na) / total) * 100)
 
   const borderColor =
     pct === 100 ? 'border-green-500/30' : missing > 0 ? 'border-red-500/20' : 'border-amber-500/20'
@@ -220,7 +221,7 @@ export function SiteCard({ site, from = 'sites' }: { site: Site; from?: 'dashboa
         {COLUMNS.map(col => {
           const t = site.templates[col]
           const s = t?.status ?? 'missing'
-          const StatusIcon = s === 'ok' ? CheckCircle : s === 'overdue' ? Clock : XCircle
+          const StatusIcon = s === 'ok' ? CheckCircle : s === 'overdue' ? Clock : s === 'n/a' ? MinusCircle : XCircle
           const colors = STATUS_COLORS[s]
           const badge = (
             <span
@@ -234,7 +235,7 @@ export function SiteCard({ site, from = 'sites' }: { site: Site; from?: 'dashboa
           )
           return (
             <div key={col}>
-              {t?.audit_id && (s === 'ok' || s === 'overdue') ? (
+              {t?.audit_id && (s === 'ok' || s === 'overdue' || s === 'n/a') ? (
                 <Link
                   to={`/inspections/${t.audit_id}`}
                   state={{ from }}

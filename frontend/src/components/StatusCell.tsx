@@ -29,14 +29,20 @@ export default function StatusCell({ status, column, from = 'dashboard' }: Props
     column,
     last_completed ? `Last: ${fmtDate(last_completed)}` : null,
     inspector || null,
-    s === 'missing' ? 'Not completed this week' : s === 'overdue' ? 'Overdue — completed before this week' : 'Completed this week',
+    s === 'n/a'
+      ? 'Not applicable — PUWER Register confirms no equipment of this type on site'
+      : s === 'missing'
+        ? 'Not completed this week'
+        : s === 'overdue'
+          ? 'Overdue — completed before this week'
+          : 'Completed this week',
     register_only ? 'Only covered by PUWER Register — no individual inspection filed' : null,
     audits.length > 1 ? `${audits.length} machines inspected this week` : null,
   ]
     .filter(Boolean)
     .join('\n')
 
-  const glyph = s === 'ok' ? '✓' : s === 'overdue' ? '⏱' : '✗'
+  const glyph = s === 'ok' ? '✓' : s === 'overdue' ? '⏱' : s === 'n/a' ? '–' : '✗'
   const colors = STATUS_COLORS[s]
   const dot = (
     <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full ${colors.bg} ${colors.text} text-xs font-bold`}>
@@ -51,7 +57,7 @@ export default function StatusCell({ status, column, from = 'dashboard' }: Props
     </span>
   ) : null
 
-  if ((s === 'ok' || s === 'overdue') && audit_id && audits.length > 1) {
+  if ((s === 'ok' || s === 'overdue' || s === 'n/a') && audit_id && audits.length > 1) {
     return (
       <div className="relative inline-block">
         <button
@@ -100,7 +106,7 @@ export default function StatusCell({ status, column, from = 'dashboard' }: Props
     )
   }
 
-  if ((s === 'ok' || s === 'overdue') && audit_id) {
+  if ((s === 'ok' || s === 'overdue' || s === 'n/a') && audit_id) {
     return (
       <Link
         to={`/inspections/${audit_id}`}

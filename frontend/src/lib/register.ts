@@ -42,6 +42,16 @@ export function computeNotes(site: Site, register: PlantRegister): string[] {
       }
     }
 
+    // PUWER Register says this site has none of this equipment — don't just take
+    // its word for it, check whether the uploaded plant register disagrees.
+    if (tpl.status === 'n/a') {
+      const registeredForType = reg[col] ?? []
+      if (registeredForType.length > 0) {
+        notes.push(`PUWER Register says no ${col} here, but the plant register lists ${registeredForType.join(', ')} (${col})`)
+      }
+      continue
+    }
+
     if (tpl.status !== 'ok') continue
 
     // A photo was attached instead of the checklist being filled in — nothing
