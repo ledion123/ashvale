@@ -617,6 +617,9 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
     machines_checked = {}
     # group_key -> col_key -> set of serials PUWER Register's own item text listed
     puwer_serials = {}
+    # group_key -> set of col_keys where PUWER Register had a photo attached instead
+    # of a typed serial list — can't be auto-verified, so the cross-check is suppressed
+    puwer_photo_only = {}
 
     for audit_id, detail in details.items():
         tkey = audit_to_tkey[audit_id]
@@ -670,6 +673,11 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                 item_serials = extract_puwer_item_serials(mtype, item_text)
                 if item_serials:
                     puwer_serials.setdefault(gkey, {}).setdefault(mtype, set()).update(item_serials)
+                elif item.get("media"):
+                    # A photo was attached instead of typing the serial list — we can't
+                    # read it (no OCR), so flag it rather than silently treating this
+                    # category as if PUWER Register had nothing to say about it.
+                    puwer_photo_only.setdefault(gkey, set()).add(mtype)
             puwer_register_present.setdefault(gkey, set()).update(present)
 
         # Extract serial numbers from all item text/notes for machine-type inspections
@@ -699,8 +707,11 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
             # Cross-check PUWER Register's own listed serials against what the
             # individual audits found this week — catches contradictions either way
             # (PUWER lists a machine no individual audit confirms, or vice versa).
+            # Skipped when PUWER Register only has a photo for this category (nothing
+            # to read means nothing to reliably compare — would just be a false alarm).
             puwer_cross_check = None
-            if col_key in INDIVIDUAL_COVERABLE:
+            photo_uploaded = col_key in puwer_photo_only.get(gkey, set())
+            if col_key in INDIVIDUAL_COVERABLE and not photo_uploaded:
                 puwer_set = puwer_serials.get(gkey, {}).get(col_key, set())
                 individual_set = machines_checked.get(gkey, {}).get(col_key, set())
                 if puwer_set or individual_set:
@@ -744,6 +755,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "register_only": register_only,
                     "machines_checked": sorted(machines_checked.get(gkey, {}).get(col_key, set())),
                     "puwer_cross_check": puwer_cross_check,
+                    "puwer_photo_uploaded": photo_uploaded,
                 }
             else:
                 templates_status[col_key] = {
@@ -755,6 +767,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "register_only": False,
                     "machines_checked": sorted(machines_checked.get(gkey, {}).get(col_key, set())),
                     "puwer_cross_check": puwer_cross_check,
+                    "puwer_photo_uploaded": photo_uploaded,
                 }
         sites_list.append({"name": site_name, "job_code": job_code, "templates": templates_status})
 
