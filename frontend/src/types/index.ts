@@ -16,6 +16,7 @@ export interface TemplateStatus {
   puwer_cross_check?: { in_puwer_not_individual: string[]; in_individual_not_puwer: string[] } | null
   puwer_photo_uploaded?: boolean
   loler_report_uploaded?: boolean
+  individual_audits?: { audit_id: string; machine_id: string; date_completed: string | null; inspector: string }[]
 }
 
 export interface Site {

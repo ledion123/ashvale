@@ -686,6 +686,10 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
     # group_keys where LOLER had a whole report attached as a file instead of the
     # per-item checklist being filled in — can't be auto-verified either
     loler_report_uploaded = set()
+    # group_key -> col_key -> [{audit_id, machine_id, date_completed, inspector}, ...]
+    # every individual audit this week, not just the most-recently-completed one kept
+    # in site_data — a site can have many machines of the same type inspected in a week
+    individual_audits = {}
 
     for audit_id, detail in details.items():
         tkey = audit_to_tkey[audit_id]
@@ -723,6 +727,10 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
             direct_audit_cols.setdefault(gkey, set()).add(tkey)
             machine_id = extract_machine_id(ad.get("name", "")) or audit_id
             machines_checked.setdefault(gkey, {}).setdefault(tkey, set()).add(machine_id)
+            individual_audits.setdefault(gkey, {}).setdefault(tkey, []).append({
+                "audit_id": audit_id, "machine_id": machine_id,
+                "date_completed": date_completed, "inspector": inspector,
+            })
 
         if tkey == "PUWER_REGISTER":
             present = set()
@@ -835,6 +843,10 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "found_serials": sorted(found),
                     "register_only": register_only,
                     "machines_checked": sorted(machines_checked.get(gkey, {}).get(col_key, set())),
+                    "individual_audits": sorted(
+                        individual_audits.get(gkey, {}).get(col_key, []),
+                        key=lambda a: a["date_completed"] or "", reverse=True,
+                    ),
                     "puwer_cross_check": puwer_cross_check,
                     "puwer_photo_uploaded": photo_uploaded,
                     "loler_report_uploaded": col_key == "LOLER" and gkey in loler_report_uploaded,
@@ -848,6 +860,10 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "found_serials": [],
                     "register_only": False,
                     "machines_checked": sorted(machines_checked.get(gkey, {}).get(col_key, set())),
+                    "individual_audits": sorted(
+                        individual_audits.get(gkey, {}).get(col_key, []),
+                        key=lambda a: a["date_completed"] or "", reverse=True,
+                    ),
                     "puwer_cross_check": puwer_cross_check,
                     "puwer_photo_uploaded": photo_uploaded,
                     "loler_report_uploaded": col_key == "LOLER" and gkey in loler_report_uploaded,
