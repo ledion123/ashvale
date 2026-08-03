@@ -122,6 +122,22 @@ def extract_serials(text):
                 serials.add(prefix + part.upper())
     return serials
 
+def extract_machine_id(audit_name):
+    """
+    Individual EXCAVATOR/DUMPER/ROLLER audit titles follow "DATE / SERIAL / SITE NAME"
+    (e.g. "20 Jul 2026 / ASH 1419 / BG218 The Queens Drive, Mill End"). Only the middle
+    segment is scanned for a serial — never the site-name segment, since some job codes
+    (e.g. "BG218") collide with recognised serial prefixes (BG -> LOLER) and would
+    otherwise be misread as a machine serial. Returns None if the title isn't in this
+    3-part shape (e.g. TELEHAND/LOLER titles are just "DATE / SITE NAME") or no serial
+    is found in the middle segment.
+    """
+    parts = audit_name.split(" / ")
+    if len(parts) != 3:
+        return None
+    serials = extract_serials(parts[1])
+    return next(iter(serials), None)
+
 def current_week_range():
     today = datetime.now(timezone.utc).date()
     monday = today - timedelta(days=today.weekday())
@@ -555,6 +571,9 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
     direct_audit_cols     = {}
     # group_key -> set of col_keys PUWER_REGISTER marked present (answer given, not N/A)
     puwer_register_present = {}
+    # group_key -> col_key -> set of distinct machine ids (serial from title, or audit_id
+    # fallback) inspected this week via the individual template — not just "was one done"
+    machines_checked = {}
 
     for audit_id, detail in details.items():
         tkey = audit_to_tkey[audit_id]
@@ -590,6 +609,8 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
 
         if tkey != "PUWER_REGISTER" and tkey in INDIVIDUAL_COVERABLE:
             direct_audit_cols.setdefault(gkey, set()).add(tkey)
+            machine_id = extract_machine_id(ad.get("name", "")) or audit_id
+            machines_checked.setdefault(gkey, {}).setdefault(tkey, set()).add(machine_id)
 
         if tkey == "PUWER_REGISTER":
             present = set()
@@ -652,6 +673,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "inspector": info["inspector"],
                     "found_serials": sorted(site_serials.get(gkey, {}).get(col_key, set())),
                     "register_only": register_only,
+                    "machines_checked": sorted(machines_checked.get(gkey, {}).get(col_key, set())),
                 }
             else:
                 templates_status[col_key] = {
@@ -661,6 +683,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "inspector": None,
                     "found_serials": [],
                     "register_only": False,
+                    "machines_checked": sorted(machines_checked.get(gkey, {}).get(col_key, set())),
                 }
         sites_list.append({"name": site_name, "job_code": job_code, "templates": templates_status})
 
