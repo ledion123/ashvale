@@ -32,7 +32,24 @@ export function computeNotes(site: Site, register: PlantRegister): string[] {
   const notes: string[] = []
 
   for (const [col, tpl] of Object.entries(site.templates)) {
+    const crossCheck = tpl.puwer_cross_check
+    if (crossCheck) {
+      if (crossCheck.in_puwer_not_individual.length) {
+        notes.push(`PUWER Register lists ${crossCheck.in_puwer_not_individual.join(', ')} but no individual audit confirms it (${col})`)
+      }
+      if (crossCheck.in_individual_not_puwer.length) {
+        notes.push(`Individual audit found ${crossCheck.in_individual_not_puwer.join(', ')} not listed on PUWER Register (${col})`)
+      }
+    }
+
     if (tpl.status !== 'ok') continue
+
+    // A photo was attached instead of the checklist being filled in — nothing
+    // reliable to compare against the register, so don't guess either way.
+    if (tpl.puwer_photo_uploaded || tpl.loler_report_uploaded) {
+      notes.push(`Report uploaded as a file — not auto-verified (${col})`)
+      continue
+    }
 
     const found = new Set(tpl.found_serials ?? [])
 

@@ -13,6 +13,9 @@ export interface TemplateStatus {
   inspector: string | null
   found_serials?: string[]
   register_only?: boolean
+  puwer_cross_check?: { in_puwer_not_individual: string[]; in_individual_not_puwer: string[] } | null
+  puwer_photo_uploaded?: boolean
+  loler_report_uploaded?: boolean
 }
 
 export interface Site {

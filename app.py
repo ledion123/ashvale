@@ -398,18 +398,42 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
             matched[row_num].add(tkey)
 
         if tkey in ("LOLER", "EXCAVATOR", "DUMPER", "ROLLER", "TELEHAND") or tkey == "PUWER_REGISTER":
-            all_text = ""
-            for item in items:
-                responses = item.get("responses", {})
-                all_text += " " + (responses.get("text") or "")
-                all_text += " " + (item.get("note") or "")
-            found_serials = extract_serials(all_text)
-            # Item text/notes are often left blank; the audit title reliably has the
-            # machine serial for individual EXCAVATOR/DUMPER/ROLLER/TELEHAND audits.
-            if tkey in INDIVIDUAL_COVERABLE:
+            found_serials = set()
+            has_media = False
+            if tkey == "LOLER":
+                for item in items:
+                    item_text = (item.get("responses", {}).get("text") or "") + " " + (item.get("note") or "")
+                    found_serials |= extract_loler_item_serials(item.get("label"), item_text)
+                    if item.get("media"):
+                        has_media = True
+            elif tkey == "PUWER_REGISTER":
+                for item in items:
+                    label_upper = (item.get("label") or "").upper()
+                    mtype = next((mt for kw, mt in ASH_KEYWORDS.items() if kw in label_upper), None)
+                    if not mtype:
+                        continue
+                    item_text = item.get("responses", {}).get("text") or ""
+                    item_serials = extract_puwer_item_serials(mtype, item_text)
+                    if item_serials:
+                        found_serials |= item_serials
+                    elif item.get("media"):
+                        has_media = True
+            else:
+                all_text = ""
+                for item in items:
+                    responses = item.get("responses", {})
+                    all_text += " " + (responses.get("text") or "")
+                    all_text += " " + (item.get("note") or "")
+                found_serials = extract_serials(all_text)
+                # Item text/notes are often left blank; the audit title reliably has the
+                # machine serial for individual EXCAVATOR/DUMPER/ROLLER/TELEHAND audits.
                 machine_id = extract_machine_id(ad.get("name", ""))
                 if machine_id:
                     found_serials.add(machine_id)
+
+            # A whole report attached as a photo instead of the checklist being filled
+            # in — nothing to read, don't guess (same treatment as the Dashboard/LOLER-check).
+            report_uploaded = has_media and not found_serials
 
             if pdf_bytes:
                 norm_job   = row_to_normjob.get(row_num, "")
@@ -420,7 +444,9 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
                             registered |= pdf_machines[norm_job].get(mt, set())
                     else:
                         registered = pdf_machines[norm_job].get(tkey, set())
-                if not found_serials:
+                if report_uploaded:
+                    append_note(row_notes, row_num, f"Report uploaded as a file — not auto-verified ({display})")
+                elif not found_serials:
                     append_note(row_notes, row_num, f"No serial no. on {display}")
                 else:
                     missing = registered - found_serials
@@ -430,7 +456,9 @@ def generate_report(from_date, to_date, excel_bytes, pdf_bytes=None):
                     if unknown:
                         append_note(row_notes, row_num, f"Not in register ({display}): {', '.join(sorted(unknown))}")
             else:
-                if not found_serials:
+                if report_uploaded:
+                    append_note(row_notes, row_num, f"Report uploaded as a file — not auto-verified ({display})")
+                elif not found_serials:
                     append_note(row_notes, row_num, f"No serial no. on {display}")
 
         for item in items:
