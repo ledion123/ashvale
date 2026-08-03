@@ -5,6 +5,7 @@ import { fetchDashboard } from '../lib/api'
 import { getWeekRange } from '../lib/dates'
 import Spinner from '../components/Spinner'
 import ErrorBanner from '../components/ErrorBanner'
+import AuditPicker from '../components/AuditPicker'
 import { STATUS_COLORS } from '../lib/statusColors'
 import { COLUMNS, type DashboardData, type Site } from '../types'
 
@@ -172,6 +173,7 @@ export default function Sites() {
 }
 
 export function SiteCard({ site, from = 'sites' }: { site: Site; from?: 'dashboard' | 'sites' }) {
+  const [openPicker, setOpenPicker] = useState<string | null>(null)
   const statuses = Object.values(site.templates)
   const ok = statuses.filter(t => t.status === 'ok').length
   const na = statuses.filter(t => t.status === 'n/a').length
@@ -233,9 +235,24 @@ export function SiteCard({ site, from = 'sites' }: { site: Site; from?: 'dashboa
               </span>
             </span>
           )
+          const audits = t?.individual_audits ?? []
           return (
-            <div key={col}>
-              {t?.audit_id && (s === 'ok' || s === 'overdue' || s === 'n/a') ? (
+            <div key={col} className="relative">
+              {t?.audit_id && (s === 'ok' || s === 'overdue' || s === 'n/a') && audits.length > 1 ? (
+                <>
+                  <button
+                    onClick={() => setOpenPicker(col)}
+                    title={`${col}: ${s} (${audits.length} machines)`}
+                    aria-label={`${col}: ${s} (${audits.length} machines)`}
+                    className="inline-flex items-center justify-center w-11 h-11 -m-3 hover:opacity-80 transition-opacity"
+                  >
+                    {badge}
+                  </button>
+                  {openPicker === col && (
+                    <AuditPicker column={col} audits={audits} from={from} onClose={() => setOpenPicker(null)} />
+                  )}
+                </>
+              ) : t?.audit_id && (s === 'ok' || s === 'overdue' || s === 'n/a') ? (
                 <Link
                   to={`/inspections/${t.audit_id}`}
                   state={{ from }}
