@@ -125,27 +125,19 @@ def extract_serials(text):
                 serials.add(prefix + part.upper())
     return serials
 
-# PUWER Register lists serials in each item's own response text, often as bare
-# numbers with no prefix (e.g. "802\n61\n43" under the Excavator item) since the
-# item's own label already implies the machine type.
-PUWER_IMPLIED_PREFIX = {
-    "EXCAVATOR": "ASH",
-    "DUMPER": "ASH",
-    "ROLLER": "ROR",
-    "TELEHAND": "TL",
-}
-
-def extract_puwer_item_serials(mtype, item_text):
+# Both PUWER Register and LOLER list serials in each item's own response text,
+# often as bare numbers with no prefix (e.g. "802\n61\n43" under a PUWER Excavator
+# item, or "16,32,40" under a LOLER "Machine Forks" item) since the item's own
+# question already implies the equipment category.
+def _implied_prefix_serials(item_text, implied_prefix):
     """
-    Parse the serials an inspector typed into a PUWER Register item's response text.
-    Explicitly-prefixed tokens (e.g. "ROR 17", "Ash 205") are parsed via the existing
-    extract_serials(). Bare numeric tokens (e.g. "802", "61") fall back to the item's
-    implied prefix from its own category (Excavator/Dumper -> ASH, Roller -> ROR,
-    Telehandler -> TL) — but only when the WHOLE token is numeric, so free-text noise
-    like "Hire" or "Na" is safely skipped rather than guessed at.
+    Parse serials an inspector typed into an item's response text. Explicitly-
+    prefixed tokens (e.g. "ROR 17", "SL8717") are parsed via the existing
+    extract_serials(). Bare numeric tokens (e.g. "802", "19") fall back to the
+    item's implied prefix — but only when the WHOLE token is numeric, so free-text
+    noise like "Hire" or "Not in use" is safely skipped rather than guessed at.
     """
-    implied_prefix = PUWER_IMPLIED_PREFIX.get(mtype)
-    if not implied_prefix or not item_text:
+    if not item_text:
         return set()
     serials = set()
     for token in re.split(r'[,/\n]', item_text):
@@ -155,9 +147,41 @@ def extract_puwer_item_serials(mtype, item_text):
         explicit = extract_serials(token)
         if explicit:
             serials.update(explicit)
-        elif token.isdigit():
+        elif implied_prefix and token.isdigit():
             serials.add(implied_prefix + token)
     return serials
+
+PUWER_IMPLIED_PREFIX = {
+    "EXCAVATOR": "ASH",
+    "DUMPER": "ASH",
+    "ROLLER": "ROR",
+    "TELEHAND": "TL",
+}
+
+def extract_puwer_item_serials(mtype, item_text):
+    """PUWER Register item text -> serials, using the item's machine-type category
+    (Excavator/Dumper -> ASH, Roller -> ROR, Telehandler -> TL) as the implied prefix."""
+    return _implied_prefix_serials(item_text, PUWER_IMPLIED_PREFIX.get(mtype))
+
+# LOLER item labels -> implied prefix, keyed by keyword found in the item's own
+# label. Concrete Bucket/Skip, Lifting Straps, and Harness use codes the app has
+# never recognised for anything and are deliberately left unmapped rather than
+# guessed at (same as the Pedestrian/Trench Roller gap noted elsewhere).
+LOLER_ITEM_KEYWORDS = {
+    "CHAIN": "SL",
+    "SHACKLE": "SH",
+    "FORK": "FK",
+    "BLOCK GRAB": "BG",
+    "TIPPING SKIP": "TS",
+}
+
+def extract_loler_item_serials(item_label, item_text):
+    """LOLER item text -> serials, using a keyword match on the item's own label
+    (chain -> SL, shackle -> SH, fork -> FK, block grab -> BG, tipping skip -> TS)
+    as the implied prefix for bare numeric entries."""
+    label_upper = (item_label or "").upper()
+    prefix = next((p for kw, p in LOLER_ITEM_KEYWORDS.items() if kw in label_upper), None)
+    return _implied_prefix_serials(item_text, prefix)
 
 def extract_machine_id(audit_name):
     """
@@ -483,20 +507,30 @@ def check_loler_coverage(from_date, to_date, pdf_bytes):
         registered = site_machines.get(job, {}).get("LOLER", set())
         seen_jobs.add(job)
 
-        all_text = " ".join(
-            (item.get("responses", {}).get("text") or "") + " " + (item.get("note") or "")
-            for item in detail.get("items", [])
-        )
-        found   = extract_serials(all_text)
+        found = set()
+        has_media = False
+        for item in detail.get("items", []):
+            item_text = (item.get("responses", {}).get("text") or "") + " " + (item.get("note") or "")
+            item_serials = extract_loler_item_serials(item.get("label"), item_text)
+            if item_serials:
+                found.update(item_serials)
+            if item.get("media"):
+                has_media = True
+        # A whole "Loler report" attached as a file (often to the generic "Any
+        # Other comments" item, not the equipment items themselves) instead of the
+        # per-item checklist being filled in — nothing to read, don't guess.
+        report_uploaded = has_media and not found
         missing = registered - found
         unknown = found - registered
 
         notes = []
-        if missing:
+        if report_uploaded:
+            notes.append("Report uploaded as a file — not auto-verified")
+        elif missing:
             notes.append(f"Not inspected: {', '.join(sorted(missing))}")
         if unknown:
             notes.append(f"Not in register: {', '.join(sorted(unknown))}")
-        if registered and not found:
+        if registered and not found and not report_uploaded:
             notes.append("No serial no. on LOLER")
 
         authorship = ad.get("authorship", {})
@@ -508,8 +542,9 @@ def check_loler_coverage(from_date, to_date, pdf_bytes):
             "inspector": authorship.get("author", "") if isinstance(authorship, dict) else "",
             "registered": sorted(registered),
             "found_in_check": sorted(found),
-            "missing": sorted(missing),
+            "missing": sorted(missing) if not report_uploaded else [],
             "unknown": sorted(unknown),
+            "report_uploaded": report_uploaded,
             "notes": "; ".join(notes) if notes else "All registered LOLER equipment checked",
         })
 
@@ -620,6 +655,9 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
     # group_key -> set of col_keys where PUWER Register had a photo attached instead
     # of a typed serial list — can't be auto-verified, so the cross-check is suppressed
     puwer_photo_only = {}
+    # group_keys where LOLER had a whole report attached as a file instead of the
+    # per-item checklist being filled in — can't be auto-verified either
+    loler_report_uploaded = set()
 
     for audit_id, detail in details.items():
         tkey = audit_to_tkey[audit_id]
@@ -680,8 +718,23 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     puwer_photo_only.setdefault(gkey, set()).add(mtype)
             puwer_register_present.setdefault(gkey, set()).update(present)
 
+        # LOLER lists serials per-item, often as bare numbers implied by the item's
+        # own question (chain/shackle/fork/etc.) — same treatment as PUWER Register.
+        if tkey == "LOLER":
+            loler_found = set()
+            has_media = False
+            for item in detail.get("items", []):
+                item_text = (item.get("responses", {}).get("text") or "") + " " + (item.get("note") or "")
+                item_serials = extract_loler_item_serials(item.get("label"), item_text)
+                if item_serials:
+                    loler_found.update(item_serials)
+                if item.get("media"):
+                    has_media = True
+            site_serials.setdefault(gkey, {}).setdefault("LOLER", set()).update(loler_found)
+            if has_media and not loler_found:
+                loler_report_uploaded.add(gkey)
         # Extract serial numbers from all item text/notes for machine-type inspections
-        if tkey in SERIAL_CHECK_TKEYS:
+        elif tkey in SERIAL_CHECK_TKEYS:
             all_text = " ".join(
                 (item.get("responses", {}).get("text") or "") + " " + (item.get("note") or "")
                 for item in detail.get("items", [])
@@ -689,7 +742,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
             serials = extract_serials(all_text)
             site_serials.setdefault(gkey, {})
             # PUWER_REGISTER covers all machine types — store under "PUWER" only.
-            # Individual machine audits (EXCAVATOR, LOLER, etc.) store under their own key.
+            # Individual machine audits (EXCAVATOR, DUMPER, etc.) store under their own key.
             serial_col = "PUWER" if tkey == "PUWER_REGISTER" else tkey
             site_serials[gkey].setdefault(serial_col, set())
             site_serials[gkey][serial_col].update(serials)
@@ -756,6 +809,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "machines_checked": sorted(machines_checked.get(gkey, {}).get(col_key, set())),
                     "puwer_cross_check": puwer_cross_check,
                     "puwer_photo_uploaded": photo_uploaded,
+                    "loler_report_uploaded": col_key == "LOLER" and gkey in loler_report_uploaded,
                 }
             else:
                 templates_status[col_key] = {
@@ -768,6 +822,7 @@ def build_dashboard_data(from_date, to_date, force_refresh=False):
                     "machines_checked": sorted(machines_checked.get(gkey, {}).get(col_key, set())),
                     "puwer_cross_check": puwer_cross_check,
                     "puwer_photo_uploaded": photo_uploaded,
+                    "loler_report_uploaded": col_key == "LOLER" and gkey in loler_report_uploaded,
                 }
         sites_list.append({"name": site_name, "job_code": job_code, "templates": templates_status})
 
